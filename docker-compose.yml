@@ -1,0 +1,20 @@
+# Qwen2.5 微调模型（HRP 领域问答）Ollama 一键部署
+# 用法：
+#   1. 把 Colab 训练导出的 .gguf 文件放到 ./models/ 目录
+#   2. ./deploy.sh        （自动创建模型并验证）
+#   3. 或手动：docker compose up -d && docker compose exec ollama ollama create hrp-qa -f /Modelfile
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama-hrp-qa
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./models:/root/.ollama/models
+      - ./Modelfile:/Modelfile
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

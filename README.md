@@ -23,8 +23,33 @@ qwen-lora-finetune/
 ├── scripts/
 │   ├── gen_notebook.py                  # 重新生成 notebook（改了内容后重跑）
 │   └── expand_dataset.py                # 用 DeepSeek API 把种子数据扩到 500+ 条
+├── docker-compose.yml                   # Ollama 部署（微调模型上线）
+├── Modelfile                            # Ollama 模型模板（Qwen ChatML）
+├── deploy.sh                            # 一键部署 + 验收
+├── hf_space/                            # HuggingFace Spaces 公网 Chat 演示（Gradio）
 └── README.md
 ```
+
+## 上线部署（两条路径，任选其一）
+
+### 路径 A：Docker + Ollama 部署微调模型（本机 / 云服务器）
+
+```bash
+# 1. 把 Colab 第 7 步导出的 model-Q4_K_M.gguf（约 2GB）放到 ./models/ 目录
+# 2. 一键部署并验收：
+./deploy.sh
+# 3. 完成后得到 OpenAI 兼容接口：http://localhost:11434/v1 （model=hrp-qa）
+#    可接入项目一 RAG 的 .env：LLM_API_BASE=http://localhost:11434/v1, LLM_MODEL=hrp-qa
+```
+
+云服务器部署后把 `localhost` 换成公网 IP 即可对外提供 API。
+
+### 路径 B：HuggingFace Spaces 免费公网 Chat（简历可直接放链接）
+
+1. Colab 第 5 步把 LoRA 推送到 HF：`model.push_to_hub("你的用户名/hrp-qa-qwen-lora")`；
+2. 新建 Space，SDK 选 **Gradio**，上传 `hf_space/` 下 `app.py` + `requirements.txt`；
+3. Space Settings → Variables 添加 `LORA_REPO=你的用户名/hrp-qa-qwen-lora`、`BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct`（CPU 免费实例建议 0.5B）；
+4. 完成后得到公网地址 `https://<用户名>-<space名>.hf.space`，可直接放进简历。
 
 ## 使用步骤（预计总耗时 1 小时，全免费）
 

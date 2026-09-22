@@ -1,0 +1,13 @@
+# Ollama Modelfile（模板：把 FROM 改成你的 gguf 实际文件名，或直接运行 ./deploy.sh 自动生成）
+FROM /root/.ollama/models/model-Q4_K_M.gguf
+
+# Qwen2.5 ChatML 对话模板（必须，否则模型输出异常）
+TEMPLATE """{{ if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}<|im_start|>user
+{{ .Prompt }}<|im_end|>
+<|im_start|>assistant
+"""
+
+PARAMETER temperature 0.3
+PARAMETER top_p 0.9
