@@ -112,6 +112,9 @@ def formatting_func(examples):
 
 dataset = Dataset.from_list(data).map(formatting_func, batched=True)
 
+# T4 不支持 bf16（Turing 架构），A100/L4 等新卡才支持；自动判断避免训练直接报错
+use_bf16 = torch.cuda.is_bf16_supported()
+
 trainer = SFTTrainer(
     model=model,
     tokenizer=tokenizer,
@@ -129,7 +132,8 @@ trainer = SFTTrainer(
         weight_decay=0.01,
         lr_scheduler_type="linear",
         seed=3407,
-        bf16=True,                    # T4 不支持 bf16 时自动回退 fp16
+        bf16=use_bf16,
+        fp16=not use_bf16,
     ),
 )
 trainer.train()
@@ -188,7 +192,11 @@ def evaluate(model, tokenizer):
 tuned_rate, tuned_rows = evaluate(model, tokenizer)
 print(f"微调后 keyword hit rate = {tuned_rate:.2%}")
 
-# ---- 重新加载 base 模型做对比 ----
+# ---- 释放显存，再加载 base 模型做对比（避免 T4 16GB 溢出）----
+del model
+import gc; gc.collect()
+torch.cuda.empty_cache()
+
 base_model, base_tokenizer = FastLanguageModel.from_pretrained(
     model_name="Qwen/Qwen2.5-3B-Instruct", max_seq_length=max_seq_length,
     dtype=None, load_in_4bit=True,

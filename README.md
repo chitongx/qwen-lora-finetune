@@ -28,6 +28,19 @@ qwen-lora-finetune/
 
 ## 使用步骤（预计总耗时 1 小时，全免费）
 
+### Colab 验收清单（跑完逐项打勾，即达到"可验收"程度）
+
+- [ ] `Runtime → Change runtime type → T4 GPU`，第 0 步打印出 GPU 名称
+- [ ] 第 0-2 步：Unsloth 安装成功，`model.print_trainable_parameters()` 显示可训练参数 <1%（约 0.4%）
+- [ ] 第 3 步：数据集加载打印 `共 N 条训练数据`
+- [ ] 第 4 步：训练正常启动并完成（T4 上 60 步约 10-20 分钟，日志出现 loss 递减）
+- [ ] 第 5 步：`lora_model/` 目录生成 adapter 权重
+- [ ] 第 6 步：打印出"微调后 keyword hit rate"与"微调前 keyword hit rate"及提升百分比 → **把这两个数字记下来**
+- [ ] 第 7 步：`gguf_model/` 生成 `model-Q4_K_M.gguf`（约 2GB），下载到本地
+- [ ] 第 8 步（可选）：本机装 Ollama，`ollama create hrp-qa -f Modelfile` 后能对话
+
+跑完后把第 6 步的真实数字发我，我会同步更新简历上的微调项目描述。
+
 ### 1. 跑通训练（Colab 免费 T4）
 
 1. 打开 [Google Colab](https://colab.research.google.com)，上传 `notebooks/qwen_lora_finetune_colab.ipynb`；
