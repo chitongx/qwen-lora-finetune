@@ -1,0 +1,6 @@
+# 在线演示（Streamlit Community Cloud）
+streamlit>=1.40
+transformers>=4.44
+torch>=2.1
+accelerate
+peft

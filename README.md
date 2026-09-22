@@ -44,12 +44,16 @@ qwen-lora-finetune/
 
 云服务器部署后把 `localhost` 换成公网 IP 即可对外提供 API。
 
-### 路径 B：HuggingFace Spaces 免费公网 Chat（简历可直接放链接）
+### 路径 B：Streamlit Community Cloud 免费公网 Chat（简历可直接放链接）
+
+> 说明：HuggingFace Spaces 的 Docker/Gradio 托管 2026 年起需 PRO 订阅，**免费公网推荐 Streamlit Community Cloud**。
 
 1. Colab 第 5 步把 LoRA 推送到 HF：`model.push_to_hub("你的用户名/hrp-qa-qwen-lora")`；
-2. 新建 Space，SDK 选 **Gradio**，上传 `hf_space/` 下 `app.py` + `requirements.txt`；
-3. Space Settings → Variables 添加 `LORA_REPO=你的用户名/hrp-qa-qwen-lora`、`BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct`（CPU 免费实例建议 0.5B）；
-4. 完成后得到公网地址 `https://<用户名>-<space名>.hf.space`，可直接放进简历。
+2. 打开 [streamlit.io/cloud](https://streamlit.io/cloud) → 用 GitHub 登录 → Create app → 选本仓库（`chitongx/qwen-lora-finetune`）→ Main file `streamlit_app.py` → Deploy；
+3. 在 Settings → **Secrets** 添加：`BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct`（CPU 免费实例建议 0.5B）、`LORA_REPO=你的用户名/hrp-qa-qwen-lora`（留空则演示 base 模型）；
+4. 约 3-5 分钟构建完成，得到公网地址：`https://qwen-lora-finetune.streamlit.app`，可直接放进简历。
+
+> 提示：`hf_space/` 目录为 HuggingFace PRO 用户的 Gradio 备选方案（免费账号托管 Gradio Space 需付费）；免费部署优先走 Streamlit。
 
 ## 使用步骤（预计总耗时 1 小时，全免费）
 
