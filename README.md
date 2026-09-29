@@ -1,9 +1,9 @@
-# Qwen2.5 领域模型 LoRA/QLoRA 微调与部署
+# Qwen3 领域模型 LoRA/QLoRA 微调与部署
 
-基于 **Qwen2.5-3B + QLoRA（Unsloth 加速）** 的领域大模型微调项目，
+基于 **Qwen3-14B + QLoRA（Unsloth 加速）** 的领域大模型微调项目，
 把通用模型"教会"医院 HRP 运营管理领域问答，产出可量化的训练前后对比指标，
 并完整走通 **训练 → 评估 → GGUF 量化 → Ollama 部署 → OpenAI 兼容 API** 的工业链路。
-全程 **免费 Colab T4 GPU** 即可跑完，适合作为 AI 应用开发工程师的第二个简历项目。
+全程 **免费 Colab T4 GPU** 即可跑完（Unsloth 官方确认 Qwen3-14B 在 T4 16GB 上舒适可跑），适合作为 AI 应用开发工程师的第二个简历项目。
 
 ## 为什么做这个项目（面试叙事）
 
@@ -76,7 +76,7 @@ qwen-lora-finetune/
 2. 菜单 `Runtime → Change runtime type → T4 GPU`；
 3. 依次运行所有单元格：
    - 第 0 步：安装 Unsloth（约 1-2 分钟）
-   - 第 1-2 步：加载 Qwen2.5-3B-Instruct 4bit + 配置 LoRA
+   - 第 1-2 步：加载 Qwen3-14B 4bit + 配置 LoRA（约 3-5 分钟下载模型）
    - 第 3 步：数据准备（内置 5 条示例可直接跑通；正式用 `data/hrp_qa_seed.jsonl` 上传替换）
    - 第 4 步：QLoRA 训练（60 步约 10-20 分钟）
    - 第 5 步：保存适配器
@@ -115,6 +115,6 @@ python scripts/expand_dataset.py --target 500
 ## 进阶路线
 
 1. 用 `expand_dataset.py` 扩到 500+ 条再训，指标会更好；
-2. 换 Qwen2.5-7B（T4 QLoRA 仍可跑）；
+2. 训练已升级到 Qwen3-14B（T4 上限）；更大需 Colab Pro（A100）跑 Qwen3-32B；
 3. 评估升级为 lm-evaluation-harness 或人工盲测打分；
 4. 学习 DPO 对齐，进一步优化回答风格。
