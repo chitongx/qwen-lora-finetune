@@ -38,7 +38,23 @@
 
 结果页显示前后命中率、完整回答和原始记录；文件不存在时明确提示训练结果尚未载入。也可以上传 JSON 临时查看。页面校验模型、25/8 划分、同题同关键词和回答对应的命中计数，但上传文件本身不是训练真实性的独立证明。
 
-**目前这是实验结果展示页面，云端新问题对话仍在接入。** 云端 GPU 必须加载同一个 Qwen3.5-4B 基座和本次 adapter。HF 创建页面目前要求 Gradio/Docker 付费；候选替代为 Modal Starter 的每月免费计算额度，但只有核验账号并将现金支出上限设置为 0 后才部署。额度耗尽时停止服务，不启用付费 Shared Endpoints。见[价格](https://modal.com/pricing)与[支出限制](https://modal.com/docs/guide/budgets)。本项目不重试已失败的隧道或公网端口路径。
+**云端对话的客户端、API 与部署入口已加入；真实 GPU 加载和公网验收尚未完成。** 云端 GPU 必须加载同一个 Qwen3.5-4B 基座和本次 adapter。HF 创建页面目前要求 Gradio/Docker 付费；候选替代为 Modal Starter 的每月免费计算额度，但只有核验账号并将现金支出上限设置为 0 后才部署。额度耗尽时停止服务，不启用付费 Shared Endpoints。见[价格](https://modal.com/pricing)与[支出限制](https://modal.com/docs/guide/budgets)。本项目不重试已失败的隧道或公网端口路径。
+
+### 云端接口接入（尚未部署）
+
+`cloud/server.py` 在加载前检查 `evaluation.json`、adapter 权重及基座标识；缺少训练产物或基座不一致即停止。接口 `/v1/chat/completions` 只提供 `hrp-qwen35-4b`，支持真实 token 流和完整多轮消息。演示输入加输出上限 4096 token，单次输出最多 256 token。此检查不能替代 GPU 推理验收。
+
+`cloud/modal_app.py` 使用 L4 的原生 BF16，空闲时缩容至零，最多一个容器，闲置保留 2 秒；仍会消耗启动、加载和推理的计算额度，不能仅靠这些参数保证免费。部署前必须在账户账单页确认适用免费余额、用量限额和 **现金支出上限 $0**。没有账户访问或免费额度时停止，不启动资源。
+
+取得并解压真实证据包后，在已授权的 Modal 环境运行：
+
+```bash
+HRP_ARTIFACT_DIR=/absolute/path/to/unpacked/artifacts modal deploy -m cloud.modal_app
+```
+
+API 默认启用 [Modal Proxy Tokens](https://modal.com/docs/guide/webhook-proxy-auth)，未授权请求由平台拒绝。通过平台页面配置凭据，不写入仓库、notebook 或结果文件。Streamlit Cloud 的 Settings → Secrets 使用 `HRP_CLOUD_URL`（不带 `/v1` 的接口根地址）和 `HRP_CLOUD_API_KEY`（平台要求的 Token ID 与 Secret 以点连接）；不要把真实值放在公开示例中。
+
+网页仅调用云端 API，首次请求可能较慢；额度不足或流中断时显示错误，不把半截回答保存为完整对话。同一接口可接入 RAG：`LLM_API_BASE` 为根地址加 `/v1`，`LLM_MODEL=hrp-qwen35-4b`，鉴权信息仅在平台界面配置。需要分别验收新问题、追问、RAG 流式回答与来源引用后才算上线。
 
 ## 保留的本机 GGUF + Ollama 示例（非当前部署路线）
 

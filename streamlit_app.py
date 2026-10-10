@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 
 import streamlit as st
+from cloud_client import chat_cloud
 
 MODEL_ID = "Qwen/Qwen3.5-4B"
 
@@ -88,7 +89,31 @@ else:
     st.download_button("下载原始结果 JSON", json.dumps(result, ensure_ascii=False, indent=2),
                        file_name="evaluation.json", mime="application/json")
 
-if os.getenv("HRP_LOCAL_OLLAMA") == "1":
+try:
+    cloud_endpoint = st.secrets.get("HRP_CLOUD_URL", "")
+    cloud_key = st.secrets.get("HRP_CLOUD_API_KEY", "")
+except st.errors.StreamlitSecretNotFoundError:
+    cloud_endpoint = cloud_key = ""
+if cloud_endpoint and cloud_key:
+    st.divider()
+    st.subheader("HRP 云端对话")
+    st.caption("Qwen3.5-4B + 本次训练 adapter；首次回答可能需要等待云端启动，免费额度耗尽时会停止服务。")
+    if "cloud_messages" not in st.session_state:
+        st.session_state.cloud_messages = []
+    for message in st.session_state.cloud_messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
+    if prompt := st.chat_input("输入 HRP 问题"):
+        messages = st.session_state.cloud_messages + [{"role": "user", "content": prompt}]
+        with st.chat_message("user"):
+            st.write(prompt)
+        try:
+            with st.chat_message("assistant"), st.spinner("云端模型生成中，首次启动可能较慢…"):
+                answer = st.write_stream(chat_cloud(messages, cloud_endpoint, cloud_key))
+            st.session_state.cloud_messages = messages + [{"role": "assistant", "content": answer}]
+        except (urllib.error.URLError, TimeoutError, KeyError, ValueError, RuntimeError) as error:
+            st.error(f"云端暂不可用，请稍后重试：{error}")
+elif os.getenv("HRP_LOCAL_OLLAMA") == "1":
     st.divider()
     st.subheader("本机真实对话 · Ollama hrp-qa")
     st.caption("仅本机服务；请先完成 GGUF 导入。保存的评估回答与此对话独立。")
