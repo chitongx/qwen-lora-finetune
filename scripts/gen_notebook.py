@@ -144,6 +144,7 @@ cell("markdown", """
 不使用随机采样，完整保留输出；到 token 上限的回答会记入生成记录。首次加载后尚未注入 LoRA，因此 baseline 是真正未训练的基础模型。
 """)
 cell("code", """
+tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
 generation_log = {}
 
 def generate(model, tokenizer, question, max_new=256):

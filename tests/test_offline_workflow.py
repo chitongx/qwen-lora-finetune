@@ -45,6 +45,17 @@ def run_data():
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_text_evaluation_accepts_processor_or_plain_tokenizer(self):
+        src = next(s for s in sources() if "def generate(" in s)
+        assignments = [n for n in ast.parse(src).body if isinstance(n, ast.Assign)
+                       and any(isinstance(t, ast.Name) and t.id == "tokenizer" for t in n.targets)]
+        self.assertTrue(assignments, "Qwen3.5 loader returns a multimodal processor; text evaluation must unwrap its tokenizer")
+        text_tokenizer = object()
+        for loaded in [SimpleNamespace(tokenizer=text_tokenizer), text_tokenizer]:
+            ns = {"tokenizer": loaded}
+            exec(compile(ast.Module(body=assignments, type_ignores=[]), "<text-tokenizer>", "exec"), ns)
+            self.assertIs(ns["tokenizer"], text_tokenizer)
+
     def test_standalone_notebook_uses_25_training_rows_from_33_seed_rows(self):
         ns = run_data()
         self.assertEqual(len(ns["data"]), 25, "Notebook must use the real dataset and exclude 8 held-out questions")

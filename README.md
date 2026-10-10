@@ -12,6 +12,8 @@
 
 ## 数据、评估和证据
 
+参考项目核对日期 2026-10-10：[Unsloth](https://github.com/unslothai/unsloth) 77,682 stars，[LlamaFactory](https://github.com/hiyouga/LlamaFactory) 75,397 stars。采用 Unsloth 官方 Qwen3.5 安装与模型模板；借鉴 LlamaFactory 的训练/评估数据分离、assistant-only loss、训练日志与 adapter 导出思路。star 数是当日快照。本项目保留短 notebook，不增加 WebUI 或第二套训练框架，先取得当前 25/8 实验的真实结果。
+
 - 原始文件 `data/hrp_qa_seed.jsonl` 共 33 条，完整内嵌到 notebook，默认无需上传。
 - 固定原始索引 `[0, 4, 8, 10, 11, 19, 24, 27]` 的 8 题作为留出集，其余 25 条用于训练。问题不重复，相关主题可能重叠，不据此宣称跨域泛化。
 - 在同一个基础模型上先实际测 baseline，再加入 r=16 LoRA，训练完整 3 个 epoch，最后测 tuned。上下文 1024，batch 1，梯度累积 8，学习率 `2e-4`。
