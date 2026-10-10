@@ -1,120 +1,78 @@
-# Qwen3 领域模型 LoRA/QLoRA 微调与部署
+# HRP 领域 LoRA 实验：Qwen3.5-4B
 
-基于 **Qwen3-14B + QLoRA（Unsloth 加速）** 的领域大模型微调项目，
-把通用模型"教会"医院 HRP 运营管理领域问答，产出可量化的训练前后对比指标，
-并完整走通 **训练 → 评估 → GGUF 量化 → Ollama 部署 → OpenAI 兼容 API** 的工业链路。
-全程 **免费 Colab T4 GPU** 即可跑完（Unsloth 官方确认 Qwen3-14B 在 T4 16GB 上舒适可跑），适合作为 AI 应用开发工程师的第二个简历项目。
+使用医院 HRP 运营问答建立可复核的训练、评估与云端部署流程。当前基础模型统一为 **`Qwen/Qwen3.5-4B`**，训练方式为 16bit LoRA + Unsloth，默认面向免费 Colab T4。本机不承担模型推理。
 
-## 为什么做这个项目（面试叙事）
+**当前状态：工程准备和离线验证已完成，真实 GPU 训练尚未完成。仓库没有实测前后命中率、训练后的 adapter 或 GGUF，不能声称已经完成微调或部署。** 不以占位数据、其他基础模型的回答或本地检查替代训练证据。
 
-- 简历需要有 **LangChain/FAISS/Milvus/LoRA/微调** 这些 JD 高频词对应的**真实做过**的项目；
-- 与项目一（RAG 知识库）形成互补：RAG 解决"外挂知识 + 实时更新"，微调解决"领域风格 + 私有部署"，
-  面试常问"RAG 和微调怎么选"，两个项目都有完整实践可以直接答；
-- 数据集自建（HRP 医院运营主题，贴合你金蝶 HRP 工作背景），微调后效果有数字可讲。
+## 为什么替换 14B
 
-## 交付内容
+本项目的约束是免费 T4、免费云端演示和小样本数据。选择 Qwen3.5-4B 是针对可用资源的工程取舍，不代表它在本领域已被证明优于 14B，或是市场最强模型。
 
-```
-qwen-lora-finetune/
-├── notebooks/
-│   └── qwen_lora_finetune_colab.ipynb   # 完整可跑：安装→训练→评估→GGUF→Ollama
-├── data/
-│   └── hrp_qa_seed.jsonl                # 33 条高质量种子问答（HRP 领域，人工编写）
-├── scripts/
-│   ├── gen_notebook.py                  # 重新生成 notebook（改了内容后重跑）
-│   └── expand_dataset.py                # 用 DeepSeek API 把种子数据扩到 500+ 条
-├── docker-compose.yml                   # Ollama 部署（微调模型上线）
-├── Modelfile                            # Ollama 模型模板（Qwen ChatML）
-├── deploy.sh                            # 一键部署 + 验收
-├── hf_space/                            # HuggingFace Spaces 公网 Chat 演示（Gradio）
-└── README.md
-```
+[Qwen 官方模型卡](https://huggingface.co/Qwen/Qwen3.5-4B)提供模型说明。[Unsloth 官方微调指南](https://unsloth.ai/docs/models/qwen3.5/fine-tune)列出 4B 的免费 Colab 路线与约 10GB 的 16bit LoRA 显存需求，明确不推荐 Qwen3.5 的 4bit QLoRA。本实验仅处理文本，训练与推理原生模板统一关闭 thinking。资料核对日期：2026-10-10；T4 的实际兼容性与资源使用仍以本次运行结果为准。
 
-## 上线部署（两条路径，任选其一）
+## 数据、评估和证据
 
-### 路径 A：Docker + Ollama 部署微调模型（本机 / 云服务器）
+- 原始文件 `data/hrp_qa_seed.jsonl` 共 33 条，完整内嵌到 notebook，默认无需上传。
+- 固定原始索引 `[0, 4, 8, 10, 11, 19, 24, 27]` 的 8 题作为留出集，其余 25 条用于训练。问题不重复，相关主题可能重叠，不据此宣称跨域泛化。
+- 在同一个基础模型上先实际测 baseline，再加入 r=16 LoRA，训练完整 3 个 epoch，最后测 tuned。上下文 1024，batch 1，梯度累积 8，学习率 `2e-4`。
+- 前后使用相同原生模板、`do_sample=False`、256 新 token 上限。完整回答和达到长度上限的记录都会保存。
+- 指标为区分大小写的字面关键词包含率，总分母为 **25 个关键词 / 8 题**。它是小样本代理指标，不是回答准确率；允许训练后持平或下降。
+- `evaluation.json` 保存逐题回答、命中分子/分母、百分点变化、数据 SHA256、训练参数、依赖版本、GPU 信息、训练日志和各阶段峰值显存。
+
+## 在 Colab 完成真实实验
+
+1. 将 `notebooks/qwen_lora_finetune_colab.ipynb` 上传到 [Colab](https://colab.research.google.com/)，选择 **Runtime → Change runtime type → T4 GPU**，从上到下运行。
+2. GPU 检查先执行；没有 CUDA 或显存不足时停止，不下载模型。安装与官方 Qwen3.5 notebook 对齐，固定 `torch==2.8.0`、`xformers==0.0.32.post2`、`transformers==5.2.0`、`trl==0.22.2`。环境首次 GPU 集成仍需实测。
+3. 完成第 5 节后下载自动生成的 **`hrp_qwen35_4b_artifacts.zip`**，包含 adapter、完整 `evaluation.json`、baseline、训练日志、训练/留出数据和指纹。
+4. GGUF 导出在第 6 节，默认 `RUN_GGUF_EXPORT = False`。证据包下载后，可改为 `True` 再单独运行该节；导出可能额外需要 RAM、磁盘和时间。下载实际生成的 `.gguf`，不要假设固定文件名。
+
+免费 GPU 的分配与配额由 Colab 决定，不承诺 40–60 分钟完成。不自动上传 HF 或 GitHub，不在代码、结果包或仓库写入任何认证信息。若未来需要发表 adapter，应通过平台自己的安全登录流程完成。
+
+## 免费公网结果页
+
+`streamlit_app.py` 只读取结果 JSON，依赖仅为 Streamlit。免费云不加载 4B 模型，也不使用一个 4B adapter 去挂载 0.5B 基座。
+
+训练后把证据包里的实测 `evaluation.json` 放到仓库 `results/evaluation.json`，发布到 GitHub，再在 [Streamlit Community Cloud](https://streamlit.io/cloud) 创建 app，入口选择 `streamlit_app.py`。无需设置 BASE_MODEL、LORA_REPO 或密钥。
+
+结果页显示前后命中率、完整回答和原始记录；文件不存在时明确提示训练结果尚未载入。也可以上传 JSON 临时查看。页面校验模型、25/8 划分、同题同关键词和回答对应的命中计数，但上传文件本身不是训练真实性的独立证明。
+
+**目前这是实验结果展示页面，云端新问题对话仍在接入。** 云端 GPU 必须加载同一个 Qwen3.5-4B 基座和本次 adapter。HF 创建页面目前要求 Gradio/Docker 付费；候选替代为 Modal Starter 的每月免费计算额度，但只有核验账号并将现金支出上限设置为 0 后才部署。额度耗尽时停止服务，不启用付费 Shared Endpoints。见[价格](https://modal.com/pricing)与[支出限制](https://modal.com/docs/guide/budgets)。本项目不重试已失败的隧道或公网端口路径。
+
+## 保留的本机 GGUF + Ollama 示例（非当前部署路线）
+
+以下是原 Qwen3 的部署示例，尚未验证 Qwen3.5 的模板和 GGUF 兼容性；本次不把它作为完成项或云端部署替代。
+
+macOS 建议安装 [原生 Ollama](https://ollama.com/download) 并启动，利用 Metal；Docker 在 Mac 上作为 CPU 备选。尚未生成训练后的 GGUF 时，部署脚本会停止，不下载其他模型冒充训练产物。
 
 ```bash
-# 1. 把 Colab 第 7 步导出的 model-Q4_K_M.gguf（约 2GB）放到 ./models/ 目录
-# 2. 一键部署并验收：
+# 将唯一一个训练后导出的 .gguf 放入 models/，名称不限。
+mkdir -p models
 ./deploy.sh
-# 3. 完成后得到 OpenAI 兼容接口：http://localhost:11434/v1 （model=hrp-qa）
-#    可接入项目一 RAG 的 .env：LLM_API_BASE=http://localhost:11434/v1, LLM_MODEL=hrp-qa
+
+# Docker CPU 备选（需要 Docker 已安装）。
+./deploy.sh docker
+
+# 安装页面依赖后，在本机开启真实对话。
+python3 -m pip install -r requirements.txt
+HRP_LOCAL_OLLAMA=1 streamlit run streamlit_app.py
 ```
 
-云服务器部署后把 `localhost` 换成公网 IP 即可对外提供 API。
+脚本生成与实际 GGUF 路径一致的 `Modelfile.generated`，导入为 `hrp-qa`，实际调用 `http://127.0.0.1:11434/api/chat` 验收非空完整回答，保存 `results/ollama_smoke.json`。ChatML 模板与页面传递完整多轮消息。Docker 端口仅绑定回环地址，不开放公网。
 
-### 路径 B：Streamlit Community Cloud 免费公网 Chat（简历可直接放链接）
+导入并验收之后才可在 RAG 项目配置 `LLM_API_BASE=http://127.0.0.1:11434/v1` 和 `LLM_MODEL=hrp-qa`。两项目位于不同容器时，需要另行明确容器网络；这里没有验证这种集成。
 
-> 说明：HuggingFace Spaces 的 Docker/Gradio 托管 2026 年起需 PRO 订阅，**免费公网推荐 Streamlit Community Cloud**。
-
-1. Colab 第 5 步把 LoRA 推送到 HF：`model.push_to_hub("你的用户名/hrp-qa-qwen-lora")`；
-2. 打开 [streamlit.io/cloud](https://streamlit.io/cloud) → 用 GitHub 登录 → Create app → 选本仓库（`chitongx/qwen-lora-finetune`）→ Main file `streamlit_app.py` → Deploy；
-3. 在 Settings → **Secrets** 添加：`BASE_MODEL=Qwen/Qwen2.5-0.5B-Instruct`（CPU 免费实例建议 0.5B）、`LORA_REPO=你的用户名/hrp-qa-qwen-lora`（留空则演示 base 模型）；
-4. 约 3-5 分钟构建完成，得到公网地址：`https://qwen-lora-finetune.streamlit.app`，可直接放进简历。
-
-> 提示：`hf_space/` 目录为 HuggingFace PRO 用户的 Gradio 备选方案（免费账号托管 Gradio Space 需付费）；免费部署优先走 Streamlit。
-
-## 使用步骤（预计总耗时 1 小时，全免费）
-
-### Colab 验收清单（跑完逐项打勾，即达到"可验收"程度）
-
-- [ ] `Runtime → Change runtime type → T4 GPU`，第 0 步打印出 GPU 名称
-- [ ] 第 0-2 步：Unsloth 安装成功，`model.print_trainable_parameters()` 显示可训练参数 <1%（约 0.4%）
-- [ ] 第 3 步：数据集加载打印 `共 N 条训练数据`
-- [ ] 第 4 步：训练正常启动并完成（T4 上 60 步约 10-20 分钟，日志出现 loss 递减）
-- [ ] 第 5 步：`lora_model/` 目录生成 adapter 权重
-- [ ] 第 6 步：打印出"微调后 keyword hit rate"与"微调前 keyword hit rate"及提升百分比 → **把这两个数字记下来**
-- [ ] 第 7 步：`gguf_model/` 生成 `model-Q4_K_M.gguf`（约 2GB），下载到本地
-- [ ] 第 8 步（可选）：本机装 Ollama，`ollama create hrp-qa -f Modelfile` 后能对话
-
-跑完后把第 6 步的真实数字发我，我会同步更新简历上的微调项目描述。
-
-### 1. 跑通训练（Colab 免费 T4）
-
-1. 打开 [Google Colab](https://colab.research.google.com)，上传 `notebooks/qwen_lora_finetune_colab.ipynb`；
-2. 菜单 `Runtime → Change runtime type → T4 GPU`；
-3. 依次运行所有单元格：
-   - 第 0 步：安装 Unsloth（约 1-2 分钟）
-   - 第 1-2 步：加载 Qwen3-14B 4bit + 配置 LoRA（约 3-5 分钟下载模型）
-   - 第 3 步：数据准备（内置 5 条示例可直接跑通；正式用 `data/hrp_qa_seed.jsonl` 上传替换）
-   - 第 4 步：QLoRA 训练（60 步约 10-20 分钟）
-   - 第 5 步：保存适配器
-   - 第 6 步：**训练前后对比评估**，自动输出 keyword hit rate 与提升
-   - 第 7 步：导出 GGUF 4bit 模型（约 2GB，下载保存）
-
-### 2. 扩数据（可选，建议正式版做）
+## 离线工程验证
 
 ```bash
-export DEEPSEEK_API_KEY=sk-xxx
-python scripts/expand_dataset.py --target 500
-# 产物：data/hrp_qa_expanded.jsonl（含 33 条种子 + 467 条扩充）
-# 建议人工抽查 10%，把答错的删掉再训练
+python3 scripts/gen_notebook.py
+python3 -m unittest discover -s tests -v
+bash -n deploy.sh
 ```
 
-### 3. 本地部署（Ollama）
+生成器只用标准库，重新生成后与已保存 notebook 完全一致。离线检查执行实际数据划分、关键词统计和结果验证函数，同时检查 baseline 顺序、GPU fail-fast、模板与解码、证据先保存、云页面轻量化及回环部署。
 
-见 notebook 第 8 步：写 Modelfile → `ollama create hrp-qa -f Modelfile` → 调 OpenAI 兼容 API。
-部署后可以把 `LLM_API_BASE=http://localhost:11434/v1` 配到项目一 RAG 系统里当生成端。
+这些检查不加载模型，也不证明 GPU 依赖、训练、GGUF 导出、Docker 推理或 HF 发布已经成功。
 
-## 评估设计（为什么这个数字能写简历）
+## 简历可写边界
 
-- 固定 8 个领域测试问题，每个标注期望关键词（如"三单匹配"→ 采购订单/入库单/发票）；
-- base 模型与微调后模型用**完全相同**的 prompt、temperature 生成回答；
-- 统计 keyword hit rate 并打印逐题对比，前后差距即"领域知识注入"的效果证明；
-- 跑完把 notebook 第 6 步输出的真实数字填进简历模板（见 notebook 最后一节）。
-
-## 面试追问准备
-
-- **LoRA 原理**：冻结原模型，训练低秩矩阵 ΔW=A·B（r<<d），推理时 W'=W+ΔW 合并，零推理开销；
-- **QLoRA 与 LoRA**：QLoRA = 4bit NF4 量化基础模型 + 双重量化 + 分页优化器，单卡 16GB 可微调 7B/13B；
-- **为什么 LoRA 不全参微调**：显存成本低一个数量级、多任务可插拔、降低灾难性遗忘；
-- **数据量**：领域 SFT 几百~几千条高质量即可，质量 > 数量；
-- **RAG vs 微调**：知识实时更新/外挂文档 → RAG；固定领域风格、私有部署、隐式知识 → 微调。
-
-## 进阶路线
-
-1. 用 `expand_dataset.py` 扩到 500+ 条再训，指标会更好；
-2. 训练已升级到 Qwen3-14B（T4 上限）；更大需 Colab Pro（A100）跑 Qwen3-32B；
-3. 评估升级为 lm-evaluation-harness 或人工盲测打分；
-4. 学习 DPO 对齐，进一步优化回答风格。
+当前可写“构建 LoRA 训练与前后评估流程”。取得真实证据后，才写“基于 Qwen3.5-4B 完成领域 LoRA 微调”，并填入实测分子/分母和百分点变化。云端 API 和 RAG 集成各自验收之后才写对应完成结果。不能将 33 条数据写成 500 条；`scripts/expand_dataset.py` 为旧的可选扩增脚本，未运行，不纳入当前默认实验。

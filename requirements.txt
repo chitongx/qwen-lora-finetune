@@ -1,6 +1,2 @@
-# 在线演示（Streamlit Community Cloud）
+# 免费云实验结果页；CUDA 训练依赖在 Colab notebook 内独立安装。
 streamlit>=1.40
-transformers>=4.44
-torch>=2.1
-accelerate
-peft
