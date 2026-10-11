@@ -17,6 +17,12 @@ class CloudUITests(unittest.TestCase):
         self.assertEqual(len(at.exception), 0)
         self.assertEqual(len(at.chat_input), 0)
 
+    def test_published_run_discloses_regression_and_truncated_answers(self):
+        at = AppTest.from_file(str(ROOT / "streamlit_app.py")).run()
+        self.assertEqual([item.value for item in at.metric], ["72.00%", "68.00%", "-4.00 个百分点"])
+        self.assertTrue(any("下降" in item.value for item in at.warning))
+        self.assertTrue(any("8/8" in item.value and "2/8" in item.value for item in at.caption))
+
     def test_cloud_chat_preserves_full_followup_history(self):
         at = AppTest.from_file(str(ROOT / "streamlit_app.py"))
         at.secrets["HRP_CLOUD_URL"] = "https://example.modal.run"

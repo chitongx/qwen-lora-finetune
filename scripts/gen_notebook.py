@@ -227,6 +227,11 @@ trainer = train_on_responses_only(trainer, instruction_part="<|im_start|>user\\n
 assert all(any(label != -100 for label in row["labels"]) for row in trainer.train_dataset), "assistant labels 全被屏蔽"
 torch.cuda.reset_peak_memory_stats()
 training_result = trainer.train()
+from collections import Counter
+training_precision = {
+    "fp16": trainer.args.fp16, "bf16": trainer.args.bf16,
+    "parameter_tensor_dtypes": dict(Counter(str(p.dtype) for p in model.parameters())),
+}
 memory["training"] = memory_snapshot()
 adapter_dir = artifacts / "lora_adapter"
 model.save_pretrained(str(adapter_dir))
@@ -259,7 +264,7 @@ result = {
     "delta_percentage_points": (tuned_metrics["rate"] - base_metrics["rate"]) * 100,
     "training": dict(training_result.metrics, seed=SEED, epochs=3, batch_size=1,
                      gradient_accumulation_steps=8, lora_r=16, max_seq_length=max_seq_length,
-                     method="LoRA", load_in_4bit=False),
+                     method="LoRA", load_in_4bit=False, precision=training_precision),
     "parameters": parameter_info, "environment": environment, "gpu": gpu_info, "memory": memory,
     "generation_settings": {"do_sample": False, "max_new_tokens": 256, "enable_thinking": False},
     "limitations": "33 seeds / 25 training / 8 held-out: keyword inclusion is a small-sample proxy, not factual accuracy or production validation.",

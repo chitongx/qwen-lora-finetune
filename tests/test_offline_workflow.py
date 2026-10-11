@@ -1,5 +1,6 @@
 """Offline regressions: execute notebook data/evaluation code without a GPU or model download."""
 import ast
+from collections import Counter
 import contextlib
 import io
 import json
@@ -191,8 +192,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(payload["stream"])
         self.assertEqual(payload["options"]["temperature"], 0)
 
-    def test_t4_chooses_fp16_for_both_model_and_training_amp(self):
-        # PyTorch can expose emulated BF16 storage on T4, while Unsloth uses native FP16.
+    def test_t4_requests_fp16_without_emulated_bf16(self):
+        # Unsloth may override the requested precision; record its actual flags separately.
         fake_torch = SimpleNamespace(bfloat16="bf16", float16="fp16",
             cuda=SimpleNamespace(is_bf16_supported=lambda including_emulation=True: including_emulation))
         parsed = ast.parse("\n".join(sources()))
@@ -204,7 +205,25 @@ class WorkflowTests(unittest.TestCase):
         amp = next(node.value for node in parsed.body if isinstance(node, ast.Assign)
                    and any(isinstance(t, ast.Name) and t.id == "use_bf16" for t in node.targets))
         value = eval(compile(ast.Expression(amp), "<training-amp>", "eval"), {"torch": fake_torch})
-        self.assertFalse(value, "AMP precision must match Unsloth's native model precision")
+        self.assertFalse(value, "T4 must not request emulated BF16 training")
+
+    def test_evidence_records_precision_after_trainer_override(self):
+        parsed = ast.parse("\n".join(sources()))
+        assignment = next((node for node in parsed.body if isinstance(node, ast.Assign)
+                           and any(isinstance(t, ast.Name) and t.id == "training_precision"
+                                   for t in node.targets)), None)
+        self.assertIsNotNone(assignment, "Evidence must record actual trainer flags after Unsloth overrides")
+        namespace = {
+            "Counter": Counter,
+            "trainer": SimpleNamespace(args=SimpleNamespace(fp16=False, bf16=False)),
+            "model": SimpleNamespace(parameters=lambda: [SimpleNamespace(dtype="float32"),
+                SimpleNamespace(dtype="float32"), SimpleNamespace(dtype="float16")]),
+        }
+        exec(compile(ast.Module(body=[assignment], type_ignores=[]), "<precision>", "exec"), namespace)
+        self.assertEqual(namespace["training_precision"], {
+            "fp16": False, "bf16": False,
+            "parameter_tensor_dtypes": {"float32": 2, "float16": 1},
+        })
 
 
 if __name__ == "__main__":
