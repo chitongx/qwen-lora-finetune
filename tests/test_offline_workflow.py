@@ -2,6 +2,8 @@
 import ast
 from collections import Counter
 import contextlib
+from datetime import datetime, timezone
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -10,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 from types import SimpleNamespace
 
@@ -46,6 +49,61 @@ def run_data():
 
 
 class WorkflowTests(unittest.TestCase):
+    def interview_function(self):
+        cells = [src for src in sources() if "def interview_compare(" in src]
+        self.assertEqual(len(cells), 1, "Notebook needs a separately runnable live interview cell")
+        tree = ast.parse(cells[0])
+        funcs = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                 and node.name == "interview_compare"]
+        self.assertNotIn("trainer.train", cells[0])
+        self.assertNotIn("write_text", cells[0], "Live Q&A must not overwrite the original evaluation")
+        return funcs
+
+    def test_interview_cell_compares_loaded_base_and_adapter_without_retraining(self):
+        funcs = self.interview_function()
+        class AdapterModel:
+            peft_config = {"default": object()}
+            disabled = False
+            @contextlib.contextmanager
+            def disable_adapter(self):
+                self.disabled = True
+                try:
+                    yield
+                finally:
+                    self.disabled = False
+        model = AdapterModel()
+        calls = []
+        log = {}
+        def generate(current, tokenizer, question, max_new=256):
+            calls.append((current.disabled, question, max_new))
+            log[question] = {"new_tokens": 3, "at_token_limit": False}
+            return "基座真实输出" if current.disabled else "adapter 真实输出"
+        ns = {"model": model, "tokenizer": SimpleNamespace(apply_chat_template=lambda *args, **kw: [1] * 10),
+              "generate": generate, "generation_log": log, "max_seq_length": 1024,
+              "FastLanguageModel": SimpleNamespace(for_inference=lambda current: None)}
+        exec(compile(ast.Module(body=funcs, type_ignores=[]), "<interview>", "exec"), ns)
+        result = ns["interview_compare"]("  科室领用耗材需要什么信息？  ")
+        self.assertEqual(result["base_answer"], "基座真实输出")
+        self.assertEqual(result["tuned_answer"], "adapter 真实输出")
+        self.assertEqual(calls, [(True, "科室领用耗材需要什么信息？", 256),
+                                 (False, "科室领用耗材需要什么信息？", 256)])
+        self.assertFalse(model.disabled, "Adapter must be restored after the base comparison")
+        self.assertEqual(result["tuned_generation"]["new_tokens"], 3)
+
+    def test_interview_cell_rejects_lost_runtime_and_oversized_question(self):
+        funcs = self.interview_function()
+        ns = {}
+        exec(compile(ast.Module(body=funcs, type_ignores=[]), "<interview>", "exec"), ns)
+        with self.assertRaisesRegex(RuntimeError, "会话"):
+            ns["interview_compare"]("新问题")
+        ns.update(model=SimpleNamespace(peft_config={"default": object()}),
+                  tokenizer=SimpleNamespace(apply_chat_template=lambda *args, **kw: [1] * 900),
+                  generate=lambda *args: self.fail("Must reject overlength before generation"),
+                  generation_log={}, max_seq_length=1024,
+                  FastLanguageModel=SimpleNamespace(for_inference=lambda current: None))
+        with self.assertRaisesRegex(ValueError, "上下文"):
+            ns["interview_compare"]("很长的问题")
+
     def test_text_evaluation_accepts_processor_or_plain_tokenizer(self):
         src = next(s for s in sources() if "def generate(" in s)
         assignments = [n for n in ast.parse(src).body if isinstance(n, ast.Assign)
@@ -121,6 +179,48 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("max_memory_allocated", src)
         self.assertIn("sha256", src)
 
+    def test_notebook_exports_fingerprint_of_actual_saved_adapter_in_json_and_zip(self):
+        source = next(src for src in sources() if "archive = shutil.make_archive" in src)
+        nodes = ast.parse(source).body
+        start = next(i for i, node in enumerate(nodes) if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == "result" for target in node.targets))
+        stop = next(i for i, node in enumerate(nodes) if isinstance(node, ast.ImportFrom)
+                    and node.module == "google.colab")
+        code = compile(ast.Module(body=nodes[start:stop], type_ignores=[]), "<artifact-export>", "exec")
+        import os
+        fingerprints = []
+        for weights in [b"saved-adapter-weights-A", b"saved-adapter-weights-B"]:
+            with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+                root = Path(tmp)
+                artifacts = root / "artifacts"
+                adapter = artifacts / "lora_adapter"
+                adapter.mkdir(parents=True)
+                (adapter / "adapter_model.safetensors").write_bytes(weights)
+                ns = {"artifacts": artifacts, "adapter_dir": adapter, "json": json, "hashlib": hashlib,
+                    "shutil": shutil, "MODEL_ID": MODEL_ID,
+                    "model": SimpleNamespace(config=SimpleNamespace(_commit_hash="base-revision")),
+                    "datetime": datetime, "timezone": timezone, "dataset_manifest": {},
+                    "base_metrics": {"rate": 0.72}, "tuned_metrics": {"rate": 0.68},
+                    "training_result": SimpleNamespace(metrics={}), "SEED": 3407,
+                    "max_seq_length": 1024, "training_precision": {}, "parameter_info": {},
+                    "environment": {}, "gpu_info": {}, "memory": {}}
+                previous = os.getcwd()
+                try:
+                    os.chdir(root)
+                    exec(code, ns)
+                finally:
+                    os.chdir(previous)
+                expected = hashlib.sha256(weights).hexdigest()
+                result = json.loads((artifacts / "evaluation.json").read_text())
+                self.assertIn("audit", result, "Fresh notebook must export adapter identity without a manual post-cell")
+                self.assertEqual(result["audit"]["adapter_sha256"], expected)
+                with zipfile.ZipFile(ns["archive"]) as bundle:
+                    archived = json.loads(bundle.read("evaluation.json"))
+                    self.assertEqual(archived["audit"]["adapter_sha256"], expected)
+                    self.assertEqual(hashlib.sha256(bundle.read("lora_adapter/adapter_model.safetensors")).hexdigest(), expected)
+                fingerprints.append(expected)
+        self.assertNotEqual(*fingerprints)
+
     def test_no_gpu_fails_before_install_or_model_download(self):
         src = sources()[0]
         self.assertIn("subprocess.check_call(", src, "Dependency installation must stop on failure")
@@ -138,7 +238,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIs(ast.literal_eval(quantized), False)
         templates = [node for node in ast.walk(parsed) if isinstance(node, ast.Call)
                      and isinstance(node.func, ast.Attribute) and node.func.attr == "apply_chat_template"]
-        self.assertEqual(len(templates), 2)
+        self.assertEqual(len(templates), 3, "Training, evaluation and live interview templates disable thinking")
         for call in templates:
             thinking = next(kw.value for kw in call.keywords if kw.arg == "enable_thinking")
             self.assertIs(ast.literal_eval(thinking), False)
