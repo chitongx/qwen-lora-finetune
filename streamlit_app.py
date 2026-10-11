@@ -76,6 +76,11 @@ else:
     before.metric("微调前", f"{result['base']['rate']:.2%}", help=f"{result['base']['hit_keywords']}/{result['base']['total_keywords']} 个关键词")
     after.metric("微调后", f"{result['tuned']['rate']:.2%}", help=f"{result['tuned']['hit_keywords']}/{result['tuned']['total_keywords']} 个关键词")
     delta.metric("变化", f"{(result['tuned']['rate'] - result['base']['rate']) * 100:+.2f} 个百分点")
+    if result["tuned"]["rate"] < result["base"]["rate"]:
+        st.warning("本轮关键词命中率下降，未证明微调提升；该 adapter 作为实验产物展示。")
+    capped = {stage: sum(item["at_token_limit"] for item in result[stage].get("generation", {}).values())
+              for stage in ("base", "tuned")}
+    st.caption(f"达到输出长度上限：微调前 {capped['base']}/8，微调后 {capped['tuned']}/8；请结合完整回答判断遗漏与重复。")
     questions = [row["instruction"] for row in result["base"]["rows"]]
     question = st.selectbox("查看真实留出题的前后回答", questions)
     index = questions.index(question)

@@ -2,13 +2,17 @@
 
 使用医院 HRP 运营问答建立可复核的训练、评估与云端部署流程。当前基础模型统一为 **`Qwen/Qwen3.5-4B`**，训练方式为 16bit LoRA + Unsloth，默认面向免费 Colab T4。本机不承担模型推理。
 
-**当前状态：工程准备和离线验证已完成，真实 GPU 训练尚未完成。仓库没有实测前后命中率、训练后的 adapter 或 GGUF，不能声称已经完成微调或部署。** 不以占位数据、其他基础模型的回答或本地检查替代训练证据。
+**2026-10-11 已在免费 Colab T4 完成真实 LoRA 训练：关键词命中率 18/25（72%）→17/25（68%），下降 4 个百分点。** 完整逐题记录见 [`results/evaluation.json`](results/evaluation.json)。Adapter 已在 Colab 保存，下载和 HF 发布尚待确认；云端推理尚未部署，不声称微调改善了回答质量。
+
+本轮使用 25 条训练数据、3 个 epoch、12 个优化步，训练耗时 249.59 秒，可训练参数 21,233,664 / 4,560,499,200（0.47%），训练峰值已分配显存 8.84 GiB。Unsloth 自动关闭 FP16/BF16 混合精度标志；评估后记录的模型参数张量同时含 FP16 与 FP32，不能描述为所有权重纯 FP32。基础模型 revision、实际标志、数据指纹与 adapter SHA256 均保存在原始记录中。
+
+逐题变化：SPD 少命中“配送”，三单匹配使用“收货单”而未命中“入库单”，采购题新增“询价”命中；净减少 1 个关键词。基座 8/8、微调后 2/8 回答达到 256 token 上限；微调后采购回答出现重复。字面指标无法独立判断事实质量，此 adapter 尚不满足作为更优问答模型的上线验收。后续应补充独立的新问题与人工事实/重复检查，避免反复围绕这 8 题调参后仍把它们称为未见过的最终评估集。
 
 ## 为什么替换 14B
 
 本项目的约束是免费 T4、免费云端演示和小样本数据。选择 Qwen3.5-4B 是针对可用资源的工程取舍，不代表它在本领域已被证明优于 14B，或是市场最强模型。
 
-[Qwen 官方模型卡](https://huggingface.co/Qwen/Qwen3.5-4B)提供模型说明。[Unsloth 官方微调指南](https://unsloth.ai/docs/models/qwen3.5/fine-tune)列出 4B 的免费 Colab 路线与约 10GB 的 16bit LoRA 显存需求，明确不推荐 Qwen3.5 的 4bit QLoRA。本实验仅处理文本，训练与推理原生模板统一关闭 thinking。资料核对日期：2026-10-10；T4 的实际兼容性与资源使用仍以本次运行结果为准。
+[Qwen 官方模型卡](https://huggingface.co/Qwen/Qwen3.5-4B)提供模型说明。[Unsloth 官方微调指南](https://unsloth.ai/docs/models/qwen3.5/fine-tune)列出 4B 的免费 Colab 路线与约 10GB 的 16bit LoRA 显存需求，明确不推荐 Qwen3.5 的 4bit QLoRA。本实验仅处理文本，训练与推理原生模板统一关闭 thinking。资料核对日期：2026-10-10；本次 T4 已完成训练，不能据此承诺其他免费 GPU 会话必然可用。
 
 ## 数据、评估和证据
 
@@ -24,7 +28,7 @@
 ## 在 Colab 完成真实实验
 
 1. 将 `notebooks/qwen_lora_finetune_colab.ipynb` 上传到 [Colab](https://colab.research.google.com/)，选择 **Runtime → Change runtime type → T4 GPU**，从上到下运行。
-2. GPU 检查先执行；没有 CUDA 或显存不足时停止，不下载模型。安装与官方 Qwen3.5 notebook 对齐，固定 `torch==2.8.0`、`xformers==0.0.32.post2`、`transformers==5.2.0`、`trl==0.22.2`。环境首次 GPU 集成仍需实测。
+2. GPU 检查先执行；没有 CUDA 或显存不足时停止，不下载模型。安装与官方 Qwen3.5 notebook 对齐，固定 `torch==2.8.0`、`xformers==0.0.32.post2`、`transformers==5.2.0`、`trl==0.22.2`。T4 的精度请求会由 Unsloth 调整，结果文件记录训练器的实际标志。
 3. 完成第 5 节后下载自动生成的 **`hrp_qwen35_4b_artifacts.zip`**，包含 adapter、完整 `evaluation.json`、baseline、训练日志、训练/留出数据和指纹。
 4. GGUF 导出在第 6 节，默认 `RUN_GGUF_EXPORT = False`。证据包下载后，可改为 `True` 再单独运行该节；导出可能额外需要 RAM、磁盘和时间。下载实际生成的 `.gguf`，不要假设固定文件名。
 
@@ -93,4 +97,4 @@ bash -n deploy.sh
 
 ## 简历可写边界
 
-当前可写“构建 LoRA 训练与前后评估流程”。取得真实证据后，才写“基于 Qwen3.5-4B 完成领域 LoRA 微调”，并填入实测分子/分母和百分点变化。云端 API 和 RAG 集成各自验收之后才写对应完成结果。不能将 33 条数据写成 500 条；`scripts/expand_dataset.py` 为旧的可选扩增脚本，未运行，不纳入当前默认实验。
+当前可写“在免费 T4 基于 Qwen3.5-4B 完成领域 LoRA 微调，可训练参数占比 0.47%、训练峰值显存 8.84 GiB；建立同基座前后评估并公开完整逐题记录”。若填写效果，应明确 72%→68%、下降 4 个百分点，不能写提升。云端 API 和 RAG 集成各自验收之后才写对应完成结果。不能将 33 条数据写成 500 条；`scripts/expand_dataset.py` 为旧的可选扩增脚本，未运行，不纳入当前默认实验。
