@@ -21,7 +21,7 @@ cell("markdown", """
 # HRP 领域 LoRA 实验 · Qwen3.5-4B
 
 目标是完成可复核的小样本实验：33 条原始种子 → 固定 25 条训练 / 8 条留出评估 → 同一模型先测 baseline → 16bit LoRA → 再测 tuned。
-当前仓库没有 GPU 训练记录、adapter 或真实提升数字。数据较小，结果仅描述这 8 题，不能证明生产效果；允许持平或下降。
+仓库已保存首轮真实 GPU 记录：关键词命中率 72%→68%，没有证明微调提升。本 notebook 用于复现实验；新会话生成的是新产物，不能冒充原 adapter。数据较小，结果仅描述这 8 题，不能证明生产效果。
 
 在 Colab 选择 **Runtime → Change runtime type → T4 GPU**，从上到下运行。默认数据已经完整内嵌，无需上传或输入密钥。
 适配器、完整回答、命中分子/分母、数据 hash、环境和 GPU 峰值会先打包下载；GGUF 是最后的可选步骤。
@@ -32,7 +32,7 @@ cell("markdown", """
 
 安装方式与 [Unsloth 官方 Qwen3.5 notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_5_(4B)_Vision.ipynb) 对齐（核对日期 2026-10-10），本实验仅训练文本。
 固定关键兼容版本：PyTorch 2.8、xformers 0.0.32.post2、Transformers 5.2.0、TRL 0.22.2。先在子进程检查 GPU，再安装，避免已导入的旧 PyTorch 干扰新版本。
-环境版本写入结果 JSON。首次 GPU 完整训练仍待实测；遇到不支持的运行时先停止，换新的 Colab T4 会话。
+环境版本写入结果 JSON。首轮 T4 已完成训练；遇到不支持的运行时先停止，换新的 Colab T4 会话。
 """)
 cell("code", """
 import os
@@ -266,6 +266,7 @@ result = {
                      gradient_accumulation_steps=8, lora_r=16, max_seq_length=max_seq_length,
                      method="LoRA", load_in_4bit=False, precision=training_precision),
     "parameters": parameter_info, "environment": environment, "gpu": gpu_info, "memory": memory,
+    "audit": {"adapter_sha256": hashlib.sha256((adapter_dir / "adapter_model.safetensors").read_bytes()).hexdigest()},
     "generation_settings": {"do_sample": False, "max_new_tokens": 256, "enable_thinking": False},
     "limitations": "33 seeds / 25 training / 8 held-out: keyword inclusion is a small-sample proxy, not factual accuracy or production validation.",
 }
@@ -298,6 +299,48 @@ cell("markdown", """
 云端只使用实际可用的免费配额，部署前核验账号资格、额度及费用上限；记录页不会用其他模型冒充本次微调模型。
 
 简历仅在真实训练、artifact 和部署验收完成后写“完成微调”及具体命中率。8 题样本需明确分母；GGUF / Ollama 未实测之前不写已部署。
+""")
+cell("markdown", """
+## 8 · 面试现场提问（单独运行，不重训）
+
+仅在本会话仍保留已训练的 `model`、tokenizer 与 adapter 时使用。将下一单元的 `RUN_INTERVIEW_QA` 改为 True，**只运行该单元**，输入面试官的新问题。
+先临时禁用 adapter 生成基础模型回答，再恢复 adapter 生成微调回答；原生模板、关闭 thinking、greedy 和 256 token 上限与原实验一致。
+不改写 `evaluation.json`，不更新固定 8 题命中率；现场回答需要人工检查事实、遗漏、重复与截断。这里的“基座”表示同一模型临时禁用 adapter。
+
+这只是免费 Colab 临时 GPU 演示，不是持续在线 API。会话丢失时明确停止，不自动下载替代模型或重新训练。恢复真实产物后先核验 model revision / adapter SHA256；若重新训练，另存新的运行记录和产物。
+""")
+cell("code", """
+def interview_compare(question):
+    required = ("model", "tokenizer", "generate", "generation_log", "FastLanguageModel", "max_seq_length")
+    if any(name not in globals() for name in required) or not getattr(model, "peft_config", None):
+        raise RuntimeError("当前会话没有已训练的 adapter；请先恢复真实训练产物，不能仅运行本单元冒充模型就绪。")
+    question = question.strip()
+    if not question:
+        raise ValueError("请输入一个 HRP 问题。")
+    token_ids = tokenizer.apply_chat_template(
+        [{"role": "user", "content": question}], tokenize=True,
+        add_generation_prompt=True, enable_thinking=False,
+    )
+    if len(token_ids) + 256 > max_seq_length:
+        raise ValueError("问题超过本实验上下文预算，请缩短问题；不会静默截断。")
+    FastLanguageModel.for_inference(model)
+    with model.disable_adapter():
+        base_answer = generate(model, tokenizer, question)
+        base_generation = dict(generation_log[question])
+    tuned_answer = generate(model, tokenizer, question)
+    return {"question": question, "base_answer": base_answer, "tuned_answer": tuned_answer,
+            "base_generation": base_generation, "tuned_generation": dict(generation_log[question]),
+            "kind": "live_interview", "note": "现场新问题；不计入原 8 题命中率。"}
+
+RUN_INTERVIEW_QA = False
+if RUN_INTERVIEW_QA:
+    live_answer = interview_compare(input("输入面试现场 HRP 新问题："))
+    print("基础模型（临时禁用 adapter）:\\n", live_answer["base_answer"])
+    print("微调模型（已恢复 adapter）:\\n", live_answer["tuned_answer"])
+    print("生成状态:", live_answer["base_generation"], live_answer["tuned_generation"])
+    print(live_answer["note"])
+else:
+    print("现场提问默认关闭。保留模型的会话内改为 True，只运行本单元即可。")
 """)
 
 notebook = {

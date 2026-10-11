@@ -16,6 +16,26 @@ class CloudChatTests(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
+    def test_health_checks_loaded_adapter_identity_before_live_demo(self):
+        client = self.load_client()
+        self.assertTrue(hasattr(client, "check_cloud"), "Live demo needs an adapter identity check")
+        metadata = {"model_id": "Qwen/Qwen3.5-4B", "served_model": "hrp-qwen35-4b",
+                    "adapter_loaded": True, "model_revision": "base-revision", "adapter_sha256": "trained-hash"}
+        with patch("urllib.request.urlopen", return_value=io.BytesIO(json.dumps(metadata).encode())) as call:
+            self.assertEqual(client.check_cloud("https://example.modal.run/", "test-only",
+                model_revision="base-revision", adapter_sha256="trained-hash"), metadata)
+        request = call.call_args.args[0]
+        self.assertEqual(request.full_url, "https://example.modal.run/health")
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-only")
+        for field, value in [("adapter_loaded", False), ("model_id", "another-model"),
+                             ("served_model", "wrong"), ("model_revision", "another-revision"),
+                             ("adapter_sha256", "another-adapter")]:
+            with self.subTest(field=field), patch("urllib.request.urlopen",
+                    return_value=io.BytesIO(json.dumps(dict(metadata, **{field: value})).encode())):
+                with self.assertRaises(ValueError):
+                    client.check_cloud("https://example.modal.run", "test-only",
+                        model_revision="base-revision", adapter_sha256="trained-hash")
+
     def test_stream_sends_complete_history_and_yields_actual_tokens(self):
         client = self.load_client()
         messages = [{"role": "user", "content": "HRP是什么？"},
@@ -38,6 +58,23 @@ class CloudChatTests(unittest.TestCase):
         with patch("urllib.request.urlopen", return_value=io.BytesIO(output.encode())):
             with self.assertRaisesRegex(RuntimeError, "中断"):
                 list(client.chat_cloud([], "https://example.modal.run", "test-only"))
+
+    def test_empty_stream_is_not_a_completed_answer(self):
+        client = self.load_client()
+        with patch("urllib.request.urlopen", return_value=io.BytesIO(b'data: [DONE]\n\n')):
+            with self.assertRaisesRegex(RuntimeError, "空回答"):
+                list(client.chat_cloud([], "https://example.modal.run", "test-only"))
+
+    def test_stream_reports_length_limit_without_changing_model_text(self):
+        client = self.load_client()
+        import inspect
+        self.assertIn("generation_info", inspect.signature(client.chat_cloud).parameters)
+        info = {}
+        output = 'data: {"choices":[{"delta":{"content":"原文"},"finish_reason":null}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n'
+        with patch("urllib.request.urlopen", return_value=io.BytesIO(output.encode())):
+            self.assertEqual(list(client.chat_cloud([], "https://example.modal.run", "test-only",
+                                                    generation_info=info)), ["原文"])
+        self.assertEqual(info, {"finish_reason": "length"})
 
     def test_server_error_is_reported_instead_of_empty_answer(self):
         client = self.load_client()

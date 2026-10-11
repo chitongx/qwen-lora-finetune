@@ -1,8 +1,8 @@
 # HRP 领域 LoRA 实验：Qwen3.5-4B
 
-使用医院 HRP 运营问答建立可复核的训练、评估与云端部署流程。当前基础模型统一为 **`Qwen/Qwen3.5-4B`**，训练方式为 16bit LoRA + Unsloth，默认面向免费 Colab T4。本机不承担模型推理。
+使用医院 HRP 运营问答建立可复核的训练、评估与云端部署流程。当前基础模型统一为 **`Qwen/Qwen3.5-4B`**，训练方式为非 4bit LoRA + Unsloth，默认面向免费 Colab T4。本机不承担模型推理。面试演示从[五分钟指南](docs/interview-demo.md)开始。
 
-**2026-10-11 已在免费 Colab T4 完成真实 LoRA 训练：关键词命中率 18/25（72%）→17/25（68%），下降 4 个百分点。** 完整逐题记录见 [`results/evaluation.json`](results/evaluation.json)。Adapter 已在 Colab 保存，下载和 HF 发布尚待确认；云端推理尚未部署，不声称微调改善了回答质量。
+**2026-10-11 已在免费 Colab T4 完成真实 LoRA 训练：关键词命中率 18/25（72%）→17/25（68%），下降 4 个百分点。** 完整逐题记录见 [`results/evaluation.json`](results/evaluation.json)。首轮 adapter 曾在 Colab 保存，但原会话现已断开，本地下载和 HF 发布尚未确认。恢复产物或重新复现后的新运行需分别保存，不覆盖首轮记录；云端推理尚未部署，不声称微调改善了回答质量。
 
 本轮使用 25 条训练数据、3 个 epoch、12 个优化步，训练耗时 249.59 秒，可训练参数 21,233,664 / 4,560,499,200（0.47%），训练峰值已分配显存 8.84 GiB。Unsloth 自动关闭 FP16/BF16 混合精度标志；评估后记录的模型参数张量同时含 FP16 与 FP32，不能描述为所有权重纯 FP32。基础模型 revision、实际标志、数据指纹与 adapter SHA256 均保存在原始记录中。
 
@@ -42,13 +42,15 @@
 
 本轮实测 `evaluation.json` 已发布到仓库 `results/evaluation.json`，由 [Streamlit Community Cloud](https://streamlit.io/cloud) 的 `main` 分支自动更新，入口为 `streamlit_app.py`。实验记录页无需设置 BASE_MODEL、LORA_REPO 或密钥。
 
-结果页显示前后命中率、完整回答和原始记录；文件不存在时明确提示训练结果尚未载入。也可以上传 JSON 临时查看。页面校验模型、25/8 划分、同题同关键词和回答对应的命中计数，但上传文件本身不是训练真实性的独立证明。
+结果页显示前后命中率、并排完整回答、命中与未命中的关键词和原始记录；提供 VMI、三单匹配、HRP 重复失效的演示入口，所有 8 题均保留。文件不存在时明确提示训练结果尚未载入。也可以上传 JSON 临时查看。页面校验模型、25/8 划分、同题同关键词和回答对应的命中计数，但上传文件本身不是训练真实性的独立证明。
+
+Notebook 第 8 节提供独立的现场新问题单元：仅使用保留的已训练模型，临时禁用 adapter 生成基座回答，再恢复 adapter 对比；不重新训练、不改写原评估。默认关闭，面试时只运行该单元。会话丢失时明确停止，不能将临时 Colab 会话描述为持续在线的公开 API。
 
 **云端对话的客户端、API 与部署入口已加入；真实 GPU 加载和公网验收尚未完成。** 云端 GPU 必须加载同一个 Qwen3.5-4B 基座和本次 adapter。HF 创建页面目前要求 Gradio/Docker 付费；候选替代为 Modal Starter 的每月免费计算额度，但只有核验账号并将现金支出上限设置为 0 后才部署。额度耗尽时停止服务，不启用付费 Shared Endpoints。见[价格](https://modal.com/pricing)与[支出限制](https://modal.com/docs/guide/budgets)。本项目不重试已失败的隧道或公网端口路径。
 
 ### 云端接口接入（尚未部署）
 
-`cloud/server.py` 在加载前检查 `evaluation.json`、adapter 权重及基座标识；缺少训练产物或基座不一致即停止。接口 `/v1/chat/completions` 只提供 `hrp-qwen35-4b`，支持真实 token 流和完整多轮消息。演示输入加输出上限 4096 token，单次输出最多 256 token。此检查不能替代 GPU 推理验收。
+`cloud/server.py` 在加载前检查 `evaluation.json`、adapter 权重及基座标识；缺少训练产物、基座不一致或权重 SHA256 与审计记录不符即停止。`/health` 返回实际权重指纹和基座版本；页面要求它们与当前有效记录一致才开放新问题输入，切换记录会使旧的校验失效。接口 `/v1/chat/completions` 只提供 `hrp-qwen35-4b`，支持真实 token 流、完整多轮消息与实际输出结束原因。演示输入加输出上限 4096 token，单次输出最多 256 token；达到上限的回答会明确标注。此检查不能替代 GPU 推理验收。
 
 `cloud/modal_app.py` 使用 L4 的原生 BF16，空闲时缩容至零，最多一个容器，闲置保留 2 秒；仍会消耗启动、加载和推理的计算额度，不能仅靠这些参数保证免费。部署前必须在账户账单页确认适用免费余额、用量限额和 **现金支出上限 $0**。没有账户访问或免费额度时停止，不启动资源。
 
@@ -60,7 +62,7 @@ HRP_ARTIFACT_DIR=/absolute/path/to/unpacked/artifacts modal deploy -m cloud.moda
 
 API 默认启用 [Modal Proxy Tokens](https://modal.com/docs/guide/webhook-proxy-auth)，未授权请求由平台拒绝。通过平台页面配置凭据，不写入仓库、notebook 或结果文件。Streamlit Cloud 的 Settings → Secrets 使用 `HRP_CLOUD_URL`（不带 `/v1` 的接口根地址）和 `HRP_CLOUD_API_KEY`（平台要求的 Token ID 与 Secret 以点连接）；不要把真实值放在公开示例中。
 
-网页仅调用云端 API，首次请求可能较慢；额度不足或流中断时显示错误，不把半截回答保存为完整对话。同一接口可接入 RAG：`LLM_API_BASE` 为根地址加 `/v1`，`LLM_MODEL=hrp-qwen35-4b`，鉴权信息仅在平台界面配置。需要分别验收新问题、追问、RAG 流式回答与来源引用后才算上线。
+网页仅调用云端 API，首次请求可能较慢；额度不足、流中断或空回答时显示可恢复的错误，不把半截回答保存为完整对话，可开始新对话或继续展示保存的训练证据。同一接口可接入 RAG：`LLM_API_BASE` 为根地址加 `/v1`，`LLM_MODEL=hrp-qwen35-4b`，鉴权信息仅在平台界面配置。需要分别验收新问题、追问、RAG 流式回答与来源引用后才算上线。
 
 ## 保留的本机 GGUF + Ollama 示例（非当前部署路线）
 

@@ -1,9 +1,15 @@
 """OpenAI-compatible API for the saved Qwen3.5 experiment adapter."""
 import json
+import hashlib
 from pathlib import Path
 
 MODEL_ID = "Qwen/Qwen3.5-4B"
 SERVED_MODEL = "hrp-qwen35-4b"
+
+
+def generation_finish_reason(token_ids, max_tokens, eos_token_id):
+    eos_ids = eos_token_id if isinstance(eos_token_id, list) else [eos_token_id]
+    return "length" if len(token_ids) >= max_tokens and token_ids[-1] not in eos_ids else "stop"
 
 
 def validate_artifacts(root):
@@ -12,8 +18,14 @@ def validate_artifacts(root):
     evidence = json.loads((root / "evaluation.json").read_text())
     if config["base_model_name_or_path"] != MODEL_ID or evidence["model_id"] != MODEL_ID:
         raise ValueError("adapter 和实验记录必须使用同一 Qwen3.5-4B 基座。")
-    if not (root / "lora_adapter" / "adapter_model.safetensors").stat().st_size:
+    weights = root / "lora_adapter" / "adapter_model.safetensors"
+    if not weights.stat().st_size:
         raise ValueError("adapter 权重为空。")
+    actual_hash = hashlib.sha256(weights.read_bytes()).hexdigest()
+    expected_hash = evidence.get("audit", {}).get("adapter_sha256")
+    if expected_hash and actual_hash != expected_hash:
+        raise ValueError("adapter SHA256 与已保存实验不一致。")
+    evidence["adapter_sha256"] = actual_hash
     return evidence
 
 
@@ -39,24 +51,37 @@ def create_api(generate, metadata):
     @api.get("/health")
     def health():
         return {"model_id": MODEL_ID, "served_model": SERVED_MODEL,
-                "model_revision": metadata.get("model_revision"), "adapter_loaded": True}
+                "model_revision": metadata.get("model_revision"), "adapter_loaded": True,
+                "adapter_sha256": metadata.get("adapter_sha256")}
+
+    def tokens_with_finish(messages, max_tokens, info):
+        iterator = iter(generate(messages, max_tokens))
+        while True:
+            try:
+                yield next(iterator)
+            except StopIteration as completion:
+                info["finish_reason"] = completion.value or "stop"
+                return
 
     @api.post("/v1/chat/completions")
     def chat(request: ChatRequest):
         if request.model != SERVED_MODEL:
             raise HTTPException(400, "Unknown model; this endpoint only serves the HRP adapter.")
         messages = [message.model_dump() for message in request.messages]
+        info = {}
         if not request.stream:
-            answer = "".join(generate(messages, request.max_tokens))
+            answer = "".join(tokens_with_finish(messages, request.max_tokens, info))
             return {"object": "chat.completion", "model": SERVED_MODEL, "choices": [
-                {"index": 0, "message": {"role": "assistant", "content": answer}, "finish_reason": "stop"}]}
+                {"index": 0, "message": {"role": "assistant", "content": answer}, "finish_reason": info["finish_reason"]}]}
 
         def events():
             try:
-                for token in generate(messages, request.max_tokens):
+                for token in tokens_with_finish(messages, request.max_tokens, info):
                     data = {"object": "chat.completion.chunk", "model": SERVED_MODEL, "choices": [
                         {"index": 0, "delta": {"content": token}, "finish_reason": None}]}
                     yield "data: " + json.dumps(data, ensure_ascii=False) + "\n\n"
+                yield "data: " + json.dumps({"object": "chat.completion.chunk", "model": SERVED_MODEL,
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": info["finish_reason"]}]}) + "\n\n"
                 yield "data: [DONE]\n\n"
             except Exception as error:
                 yield "data: " + json.dumps({"error": {"message": str(error)}}, ensure_ascii=False) + "\n\n"
@@ -84,12 +109,15 @@ def load_api(root):
             raise ValueError("本次对话超过演示上下文上限，请开始新对话或缩短问题。")
         streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=120)
         errors = []
+        finish = {}
         def run():
             try:
                 with torch.inference_mode():
-                    model.generate(**inputs, streamer=streamer, max_new_tokens=max_tokens,
+                    outputs = model.generate(**inputs, streamer=streamer, max_new_tokens=max_tokens,
                                    do_sample=False, temperature=None, top_p=None, top_k=None,
                                    pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id)
+                    new_ids = outputs[0][inputs["input_ids"].shape[1]:].tolist()
+                    finish["reason"] = generation_finish_reason(new_ids, max_tokens, model.generation_config.eos_token_id)
             except Exception as error:
                 errors.append(error)
                 streamer.on_finalized_text("", stream_end=True)
@@ -101,4 +129,5 @@ def load_api(root):
                 raise errors[0]
         finally:
             worker.join()
+        return finish["reason"]
     return create_api(generate, evidence)
