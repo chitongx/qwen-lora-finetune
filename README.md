@@ -36,9 +36,11 @@
 
 ## 免费公网结果页
 
+已部署的免费实验记录页面：[qwen35-hrp-lora.streamlit.app](https://qwen35-hrp-lora.streamlit.app/)。2026-10-11 已在浏览器确认显示 72%→68%、下降提示、前后完整回答与原始记录；此验收不包含新问题 GPU 推理。
+
 `streamlit_app.py` 只读取结果 JSON，依赖仅为 Streamlit。免费云不加载 4B 模型，也不使用一个 4B adapter 去挂载 0.5B 基座。
 
-训练后把证据包里的实测 `evaluation.json` 放到仓库 `results/evaluation.json`，发布到 GitHub，再在 [Streamlit Community Cloud](https://streamlit.io/cloud) 创建 app，入口选择 `streamlit_app.py`。无需设置 BASE_MODEL、LORA_REPO 或密钥。
+本轮实测 `evaluation.json` 已发布到仓库 `results/evaluation.json`，由 [Streamlit Community Cloud](https://streamlit.io/cloud) 的 `main` 分支自动更新，入口为 `streamlit_app.py`。实验记录页无需设置 BASE_MODEL、LORA_REPO 或密钥。
 
 结果页显示前后命中率、完整回答和原始记录；文件不存在时明确提示训练结果尚未载入。也可以上传 JSON 临时查看。页面校验模型、25/8 划分、同题同关键词和回答对应的命中计数，但上传文件本身不是训练真实性的独立证明。
 

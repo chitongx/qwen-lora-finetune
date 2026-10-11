@@ -19,7 +19,8 @@ class CloudUITests(unittest.TestCase):
 
     def test_published_run_discloses_regression_and_truncated_answers(self):
         at = AppTest.from_file(str(ROOT / "streamlit_app.py")).run()
-        self.assertEqual([item.value for item in at.metric], ["72.00%", "68.00%", "-4.00 个百分点"])
+        self.assertEqual([item.value for item in at.metric], ["72.00%", "68.00%", "-4.00"])
+        self.assertEqual(at.metric[2].label, "变化（百分点）")
         self.assertTrue(any("下降" in item.value for item in at.warning))
         self.assertTrue(any("8/8" in item.value and "2/8" in item.value for item in at.caption))
 
