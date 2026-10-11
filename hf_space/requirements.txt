@@ -1,5 +1,1 @@
-gradio>=4.44
-transformers>=4.44
-torch>=2.1
-accelerate
-peft
+# Legacy HF Spaces deployment retired; no model-loader dependencies remain.
