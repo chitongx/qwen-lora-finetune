@@ -6,6 +6,9 @@ from textwrap import dedent
 ROOT = Path(__file__).resolve().parents[1]
 seed = [json.loads(line) for line in (ROOT / "data/hrp_qa_seed.jsonl").read_text().splitlines() if line.strip()]
 assert len(seed) == 33 and len({row["instruction"] for row in seed}) == 33
+backup_source = (ROOT / "artifact_backup.py").read_text().split('\nif __name__ == "__main__":', 1)[0]
+evaluation_source = (ROOT / "evaluation_v2.py").read_text().split('\nif __name__ == "__main__":', 1)[0]
+eval_v2_cases = [json.loads(line) for line in (ROOT / "data/eval_v2.jsonl").read_text().splitlines() if line.strip()]
 cells = []
 
 
@@ -24,15 +27,16 @@ cell("markdown", """
 仓库已保存首轮真实 GPU 记录：关键词命中率 72%→68%，没有证明微调提升。本 notebook 用于复现实验；新会话生成的是新产物，不能冒充原 adapter。数据较小，结果仅描述这 8 题，不能证明生产效果。
 
 在 Colab 选择 **Runtime → Change runtime type → T4 GPU**，从上到下运行。默认数据已经完整内嵌，无需上传或输入密钥。
-适配器、完整回答、命中分子/分母、数据 hash、环境和 GPU 峰值会先打包下载；GGUF 是最后的可选步骤。
+训练前必须由本人授权挂载 Google Drive，创建独立 run 目录并通过写入回读检查；失败即停止，不盲目重训。适配器和记录直接写入该目录，ZIP 在 Colab 本地校验后另存 Drive，再下载到本机作为第二副本；GGUF 是最后的可选步骤。
 免费 GPU 配额与运行时可用性由 Colab 决定，不保证时长。训练、推理与部署统一使用 Qwen3.5-4B。遵循官方建议，不做 Qwen3.5 的 4bit QLoRA。
 """)
 cell("markdown", """
-## 0 · GPU 检查和依赖
+## 0 · GPU、持久保存预检与依赖
 
 安装方式与 [Unsloth 官方 Qwen3.5 notebook](https://colab.research.google.com/github/unslothai/notebooks/blob/main/nb/Qwen3_5_(4B)_Vision.ipynb) 对齐（核对日期 2026-10-10），本实验仅训练文本。
 固定关键兼容版本：PyTorch 2.8、xformers 0.0.32.post2、Transformers 5.2.0、TRL 0.22.2。先在子进程检查 GPU，再安装，避免已导入的旧 PyTorch 干扰新版本。
 环境版本写入结果 JSON。首轮 T4 已完成训练；遇到不支持的运行时先停止，换新的 Colab T4 会话。
+Google Drive 挂载会由平台向你请求权限，请本人判断并完成；不在 notebook 中填写或保存任何 Token、Cookie 或密钥。每次运行创建新目录，不覆盖首轮结果。看到“持久写入已验证”后才会安装依赖。
 """)
 cell("code", """
 import os
@@ -46,6 +50,18 @@ except (FileNotFoundError, subprocess.CalledProcessError):
     raise RuntimeError("未检测到 CUDA GPU；请先在 Colab 切换到 T4 GPU，不会开始下载模型。")
 if int(probe.stdout.strip().splitlines()[0].rsplit(",", 1)[1]) < 14 * 1024:
     raise RuntimeError("本实验需要至少约 14 GiB CUDA 显存，请使用 Colab T4。")
+""" + backup_source + """
+
+from google.colab import drive
+drive.mount("/content/drive")
+drive_home = Path("/content/drive/MyDrive")
+if not drive_home.is_dir():
+    raise RuntimeError("Google Drive 未完成挂载；停止，不开始安装或训练。")
+backup_storage = drive_home / "HRP_LoRA_Backups"
+backup_storage.mkdir(exist_ok=True)
+artifacts = prepare_run(backup_storage)
+backup_cache = Path("/content/hrp_backup_cache")
+print("持久写入已验证，独立运行目录:", artifacts.parent)
 os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "uv"])
 install = [sys.executable, "-m", "uv", "pip", "install", "--system"]
@@ -94,8 +110,7 @@ def data_hash(rows):
 dataset_manifest = {"seed_count": len(seed), "train_count": len(data), "heldout_count": len(eval_set),
                     "seed_sha256": data_hash(seed), "train_sha256": data_hash(data),
                     "heldout_sha256": data_hash(eval_set), "heldout_seed_indices": list(heldout_keywords)}
-artifacts = Path("artifacts")
-artifacts.mkdir(exist_ok=True)
+assert_backup_ready(artifacts)
 for name, rows in [("train", data), ("heldout", eval_set)]:
     (artifacts / f"{name}.jsonl").write_text("".join(json.dumps(row, ensure_ascii=False) + "\\n" for row in rows), encoding="utf-8")
 (artifacts / "dataset_manifest.json").write_text(json.dumps(dataset_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -108,6 +123,7 @@ cell("markdown", """
 固定短上下文 1024，保留 T4 显存余量。实际显存和依赖版本会记录，不预先承诺参数占比或速度提升。
 """)
 cell("code", """
+assert_backup_ready(artifacts)
 from unsloth import FastLanguageModel
 import torch
 from importlib.metadata import version
@@ -189,6 +205,7 @@ cell("markdown", """
 只对 assistant 输出计算损失。回答模板由 tokenizer 生成，长度超限时停止，避免默默截断训练答案。
 """)
 cell("code", """
+assert_backup_ready(artifacts)
 from datasets import Dataset
 from trl import SFTTrainer, SFTConfig
 from unsloth.chat_templates import train_on_responses_only
@@ -243,7 +260,7 @@ cell("markdown", """
 ## 5 · 训练后评估，并先保存完整证据包
 
 仅在这步完成后才有真实的前后数字。报告百分点变化，不把两模型能力差异归因于微调。
-ZIP 包含 adapter、完整答案、训练日志、25/8 数据、数据 hash 和资源记录；不含任何认证信息。
+ZIP 包含 adapter、完整答案、训练日志、25/8 数据、数据 hash、运行身份与逐文件 SHA256 manifest；仅打包明确允许的产物文件，不包含认证信息。Drive 与本地 ZIP 都通过一致性检查后才发起浏览器下载；浏览器下载完成仍需你在 Mac 上确认并校验。
 """)
 cell("code", """
 import shutil
@@ -266,16 +283,19 @@ result = {
                      gradient_accumulation_steps=8, lora_r=16, max_seq_length=max_seq_length,
                      method="LoRA", load_in_4bit=False, precision=training_precision),
     "parameters": parameter_info, "environment": environment, "gpu": gpu_info, "memory": memory,
-    "audit": {"adapter_sha256": hashlib.sha256((adapter_dir / "adapter_model.safetensors").read_bytes()).hexdigest()},
+    "audit": {"run_id": artifacts.parent.name,
+              "adapter_sha256": hashlib.sha256((adapter_dir / "adapter_model.safetensors").read_bytes()).hexdigest()},
     "generation_settings": {"do_sample": False, "max_new_tokens": 256, "enable_thinking": False},
     "limitations": "33 seeds / 25 training / 8 held-out: keyword inclusion is a small-sample proxy, not factual accuracy or production validation.",
 }
 (artifacts / "evaluation.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-archive = shutil.make_archive("hrp_qwen35_4b_artifacts", "zip", str(artifacts))
+archive = build_verified_bundle(artifacts, backup_cache)
 print(f"base={base_metrics['rate']:.2%}; tuned={tuned_metrics['rate']:.2%}; change={result['delta_percentage_points']:+.2f} 个百分点")
-print("已保存证据包:", archive)
+print("Drive 已校验备份:", artifacts.parent / archive.name)
+print("Colab 本地已校验副本:", archive)
+print("ZIP 与权重指纹:", verify_bundle(archive))
 from google.colab import files
-files.download(archive)
+files.download(str(archive))
 """)
 cell("markdown", """
 ## 6 · 可选：GGUF 导出
@@ -341,6 +361,63 @@ if RUN_INTERVIEW_QA:
     print(live_answer["note"])
 else:
     print("现场提问默认关闭。保留模型的会话内改为 True，只运行本单元即可。")
+""")
+cell("markdown", """
+## 9 · 独立扩展评估（默认关闭，不重训）
+
+新增 28 道原领域知识的新表达、组合与反例题，**agent 编写、未经人工业务审阅、不加入训练**；它们不是外部知识或统计独立的专业评测集。
+只有同一会话保留真实模型、对应 adapter 和已验证备份时才可改 `RUN_EVAL_V2=True`，只运行本单元。
+先临时禁用 adapter 测基座，再恢复 adapter 测微调。关闭 thinking，greedy，256 新 token。56 次生成会额外消耗免费 GPU 额度；没有可用会话就保持关闭，不能填入臆造指标。
+
+新报告单独保存为 `evaluation_v2.json`，基座阶段先保存为 `evaluation_v2_base.json`，不改首轮 `evaluation.json`、固定 8 题或训练数据。
+报告保留完整回答、同义词组字面覆盖、字符四元组重复信号、长度上限信号和人工待审标记。字面覆盖不判断否定、流程顺序或事实正确性；长度触顶也不必然代表答案不完整。
+完成后生成新的双副本 ZIP，旧 ZIP 保留。真实模型输出和人工业务复核都未执行前，不写新的模型效果数字。
+""")
+cell("code", evaluation_source + """
+
+eval_v2_cases = """ + repr(eval_v2_cases) + """
+
+def run_evaluation_v2():
+    global archive
+    required = ("model", "tokenizer", "generate", "generation_log", "FastLanguageModel", "artifacts", "archive", "backup_cache", "data_hash")
+    if any(name not in globals() for name in required) or not getattr(model, "peft_config", None):
+        raise RuntimeError("当前会话缺少真实 adapter 或已验证备份；保持关闭，不开始新训练。")
+    assert_backup_ready(artifacts)
+    if (artifacts / "evaluation_v2.json").exists():
+        raise RuntimeError("此运行已有扩展评估记录；请保留原记录，不重复消耗 GPU 或覆盖。")
+    evidence = json.loads((artifacts / "evaluation.json").read_text())
+    adapter_hash = evidence["audit"]["adapter_sha256"]
+    backup = verify_bundle(archive, expected_adapter_sha256=adapter_hash)
+    if (sha256_file(artifacts / "lora_adapter" / "adapter_model.safetensors") != adapter_hash
+            or getattr(model.config, "_commit_hash", None) != evidence["model_revision"]):
+        raise RuntimeError("会话/备份的基座版本或 adapter 指纹不一致，停止扩展评估。")
+    FastLanguageModel.for_inference(model)
+    def observed_answer(question):
+        answer = generate(model, tokenizer, question)
+        return dict(generation_log[question], answer=answer, max_new_tokens=256)
+    with model.disable_adapter():
+        base_v2 = evaluate_cases(eval_v2_cases, observed_answer)
+    (artifacts / "evaluation_v2_base.json").write_text(json.dumps(base_v2, ensure_ascii=False, indent=2), encoding="utf-8")
+    tuned_v2 = evaluate_cases(eval_v2_cases, observed_answer)
+    expanded = {"schema_version": 2, "source_run_id": backup["run_id"], "model_id": MODEL_ID,
+        "model_revision": evidence["model_revision"], "adapter_sha256": adapter_hash,
+        "eval_cases_sha256": data_hash(eval_v2_cases), "base_method": "same loaded model with adapter disabled",
+        "generation_settings": {"do_sample": False, "max_new_tokens": 256, "enable_thinking": False},
+        "prepared_data_unreviewed": True, "base": base_v2, "tuned": tuned_v2}
+    assert_backup_ready(artifacts)
+    (artifacts / "evaluation_v2.json").write_text(json.dumps(expanded, ensure_ascii=False, indent=2), encoding="utf-8")
+    archive = build_verified_bundle(artifacts, backup_cache)
+    print("扩展评估已独立保存，所有题仍待人工业务复核:", artifacts / "evaluation_v2.json")
+    print("新 Drive ZIP:", artifacts.parent / archive.name)
+    return expanded
+
+RUN_EVAL_V2 = False
+if RUN_EVAL_V2:
+    expanded_result = run_evaluation_v2()
+    from google.colab import files
+    files.download(str(archive))
+else:
+    print("扩展评估准备完成，尚未生成新模型结果；保持关闭直到真实模型与备份就绪。")
 """)
 
 notebook = {
