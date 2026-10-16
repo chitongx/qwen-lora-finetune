@@ -27,9 +27,9 @@
 
 ## 在 Colab 完成真实实验
 
-1. 将 `notebooks/qwen_lora_finetune_colab.ipynb` 上传到 [Colab](https://colab.research.google.com/)，选择 **Runtime → Change runtime type → T4 GPU**，从上到下运行。
-2. GPU 检查先执行；没有 CUDA 或显存不足时停止，不下载模型。安装与官方 Qwen3.5 notebook 对齐，固定 `torch==2.8.0`、`xformers==0.0.32.post2`、`transformers==5.2.0`、`trl==0.22.2`。T4 的精度请求会由 Unsloth 调整，结果文件记录训练器的实际标志。
-3. 完成第 5 节后下载自动生成的 **`hrp_qwen35_4b_artifacts.zip`**，包含 adapter、完整 `evaluation.json`、baseline、训练日志、训练/留出数据和指纹。
+1. 将 `notebooks/qwen_lora_finetune_colab.ipynb` 上传到 [Colab](https://colab.research.google.com/)，选择 **Runtime → Change runtime type → T4 GPU**。先由本人完成 Drive 挂载授权；在 `MyDrive/HRP_LoRA_Backups/` 创建独立 run 并验证持久目录写入后，再按顺序继续。没有可靠存储时不开始安装或训练。
+2. GPU 检查没有 CUDA 或显存不足时停止，不下载模型。安装与官方 Qwen3.5 notebook 对齐，固定 `torch==2.8.0`、`xformers==0.0.32.post2`、`transformers==5.2.0`、`trl==0.22.2`。T4 的精度请求会由 Unsloth 调整，结果文件记录训练器的实际标志。
+3. 第 5 节将 adapter、对应 `evaluation.json`、baseline、训练日志、训练/留出数据和 manifest 保存在该 run。ZIP 在 Colab 本地构建并校验后复制到 Drive，再发起本机下载；文件名包含运行身份与随机后缀，不覆盖旧包。离开会话前在 Drive 独立确认文件，并在本机运行 `python artifact_backup.py 下载的ZIP路径`；触发下载不等于下载已完成。
 4. GGUF 导出在第 6 节，默认 `RUN_GGUF_EXPORT = False`。证据包下载后，可改为 `True` 再单独运行该节；导出可能额外需要 RAM、磁盘和时间。下载实际生成的 `.gguf`，不要假设固定文件名。
 
 免费 GPU 的分配与配额由 Colab 决定，不承诺 40–60 分钟完成。不自动上传 HF 或 GitHub，不在代码、结果包或仓库写入任何认证信息。若未来需要发表 adapter，应通过平台自己的安全登录流程完成。
@@ -46,13 +46,17 @@
 
 Notebook 第 8 节提供独立的现场新问题单元：仅使用保留的已训练模型，临时禁用 adapter 生成基座回答，再恢复 adapter 对比；不重新训练、不改写原评估。默认关闭，面试时只运行该单元。会话丢失时明确停止，不能将临时 Colab 会话描述为持续在线的公开 API。
 
+2026-10-16 已准备独立的 28 道扩展题（91 个别名要点组）与第 9 节评估单元，默认 `RUN_EVAL_V2=False`。题目来自原 33 条种子知识的新场景与组合，由 agent 编写，业务人工复核待完成，不进入训练。真实模型运行后单独保存完整回答、字面要点覆盖、重复和触及长度上限的信号；这些不是事实准确率。本次只完成流程验证，尚未取得这 28 道新题的 GPU 前后结果。详见[备份与扩展评估](docs/backup-and-evaluation.md)。
+
 **云端对话的客户端、API 与部署入口已加入；真实 GPU 加载和公网验收尚未完成。** 云端 GPU 必须加载同一个 Qwen3.5-4B 基座和本次 adapter。HF 创建页面目前要求 Gradio/Docker 付费；候选替代为 Modal Starter 的每月免费计算额度，但只有核验账号并将现金支出上限设置为 0 后才部署。额度耗尽时停止服务，不启用付费 Shared Endpoints。见[价格](https://modal.com/pricing)与[支出限制](https://modal.com/docs/guide/budgets)。本项目不重试已失败的隧道或公网端口路径。
+
+用户需要一次准备的账号事项、两应用配置项与最终实际验收顺序见[云端接入清单](docs/cloud-acceptance.md)。账号尚未就绪时，只完成离线准备，不将流程测试当作持久备份或云端加载成功。
 
 ### 云端接口接入（尚未部署）
 
 `cloud/server.py` 在加载前检查 `evaluation.json`、adapter 权重及基座标识；缺少训练产物、基座不一致或权重 SHA256 与审计记录不符即停止。`/health` 返回实际权重指纹和基座版本；页面要求它们与当前有效记录一致才开放新问题输入，切换记录会使旧的校验失效。接口 `/v1/chat/completions` 只提供 `hrp-qwen35-4b`，支持真实 token 流、完整多轮消息与实际输出结束原因。演示输入加输出上限 4096 token，单次输出最多 256 token；达到上限的回答会明确标注。此检查不能替代 GPU 推理验收。
 
-`cloud/modal_app.py` 使用 L4 的原生 BF16，空闲时缩容至零，最多一个容器，闲置保留 2 秒；仍会消耗启动、加载和推理的计算额度，不能仅靠这些参数保证免费。部署前必须在账户账单页确认适用免费余额、用量限额和 **现金支出上限 $0**。没有账户访问或免费额度时停止，不启动资源。
+`cloud/modal_app.py` 使用 L4 的原生 BF16，空闲时缩容至零，最多一个容器，闲置保留 60 秒以便检查模型后继续提问；HF 下载缓存放在专用 Modal Volume，减少后续冷启动的重复下载。保温、加载、推理和存储仍需计入额度，配置不保证免费。部署前必须在账户账单页确认适用免费余额、用量限额和 **现金支出上限 $0**。没有账户访问或免费额度时停止，不创建或启动资源。缓存尚未经真实云端验收，见[官方模型存储说明](https://modal.com/docs/guide/model-weights)。
 
 取得并解压真实证据包后，在已授权的 Modal 环境运行：
 

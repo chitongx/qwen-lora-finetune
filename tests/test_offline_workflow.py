@@ -29,6 +29,7 @@ def sources():
 
 
 def run_data():
+    from artifact_backup import assert_backup_ready, prepare_run
     src = next(s for s in sources() if "data = seed" in s or "# DATA" in s)
     ns = {}
     with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
@@ -37,6 +38,7 @@ def run_data():
         old = os.getcwd()
         try:
             os.chdir(tmp)
+            ns.update(artifacts=prepare_run(Path(tmp)), assert_backup_ready=assert_backup_ready)
             exec(src, ns)
         finally:
             os.chdir(old)
@@ -49,6 +51,102 @@ def run_data():
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_drive_authorization_failure_stops_before_dependency_install(self):
+        source = sources()[0]
+        self.assertIn("drive.mount", source, "Persistent output must be authorized before setup or training")
+        mount = SimpleNamespace(mount=lambda path: (_ for _ in ()).throw(RuntimeError("human authorization required")))
+        with patch.dict(sys.modules, {"google.colab": SimpleNamespace(drive=mount)}), \
+             patch("subprocess.run", return_value=SimpleNamespace(stdout="Tesla T4, 15360")), \
+             patch("subprocess.check_call") as install:
+            with self.assertRaisesRegex(RuntimeError, "human authorization required"):
+                exec(source, {"__name__": "__notebook__"})
+        install.assert_not_called()
+
+    def test_training_cell_checks_persistent_write_access_before_model_mutation(self):
+        source = next(src for src in sources() if "training_result = trainer.train()" in src)
+        first = ast.parse(source).body[0]
+        self.assertIsInstance(first, ast.Expr, "Training must stop before imports/model mutation if backup is not ready")
+        self.assertEqual(getattr(first.value.func, "id", None), "assert_backup_ready")
+        from artifact_backup import assert_backup_ready
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(RuntimeError, "持久"):
+                exec(compile(ast.Module(body=[first], type_ignores=[]), "<training-preflight>", "exec"),
+                     {"assert_backup_ready": assert_backup_ready, "artifacts": Path(tmp)})
+
+    def test_expanded_evaluation_is_opt_in_and_requires_preserved_model_and_backup(self):
+        cells = [src for src in sources() if "def run_evaluation_v2(" in src]
+        self.assertEqual(len(cells), 1, "Independent evaluation needs a separately runnable, disabled-by-default cell")
+        source = cells[0]
+        self.assertIn("RUN_EVAL_V2 = False", source)
+        self.assertNotIn("trainer.train", source)
+        self.assertNotIn('artifacts / "evaluation.json").write_text', source)
+        namespace = {"__name__": "__notebook__"}
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(source, namespace)
+        self.assertEqual(len(namespace["eval_v2_cases"]), 28)
+        with self.assertRaisesRegex(RuntimeError, "会话|备份"):
+            namespace["run_evaluation_v2"]()
+
+    def test_expanded_evaluation_keeps_original_record_and_backs_up_new_full_answers(self):
+        cells = [src for src in sources() if "def run_evaluation_v2(" in src]
+        self.assertEqual(len(cells), 1, "Expanded evaluation has not been integrated")
+        from artifact_backup import (assert_backup_ready, build_verified_bundle,
+                                     prepare_run, sha256_file, verify_bundle)
+        class Model:
+            peft_config = {"default": object()}
+            config = SimpleNamespace(_commit_hash="base-revision")
+            disabled = False
+            @contextlib.contextmanager
+            def disable_adapter(self):
+                self.disabled = True
+                try:
+                    yield
+                finally:
+                    self.disabled = False
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Path(tmp)
+            artifacts = prepare_run(storage)
+            adapter = artifacts / "lora_adapter"
+            adapter.mkdir()
+            (adapter / "adapter_model.safetensors").write_bytes(b"test-only-weights")
+            (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": MODEL_ID}))
+            (adapter / "tokenizer_config.json").write_text("{}")
+            (adapter / "tokenizer.json").write_text("{}")
+            original = json.dumps({"model_id": MODEL_ID, "model_revision": "base-revision", "audit": {
+                "adapter_sha256": sha256_file(adapter / "adapter_model.safetensors")}})
+            (artifacts / "evaluation.json").write_text(original)
+            archive = build_verified_bundle(artifacts, storage / "cache")
+            model = Model()
+            log, calls = {}, []
+            def generate(current, tokenizer, question, max_new=256):
+                calls.append((current.disabled, question))
+                log[question] = {"new_tokens": 3, "at_token_limit": False}
+                return "完整基座回答" if current.disabled else "完整微调回答"
+            namespace = {"__name__": "__notebook__", "model": model, "tokenizer": object(),
+                "generate": generate, "generation_log": log, "FastLanguageModel": SimpleNamespace(for_inference=lambda model: None),
+                "artifacts": artifacts, "archive": archive, "backup_cache": storage / "cache",
+                "assert_backup_ready": assert_backup_ready, "build_verified_bundle": build_verified_bundle,
+                "sha256_file": sha256_file, "verify_bundle": verify_bundle, "MODEL_ID": MODEL_ID,
+                "data_hash": lambda rows: hashlib.sha256(json.dumps(rows, ensure_ascii=False, sort_keys=True).encode()).hexdigest()}
+            with contextlib.redirect_stdout(io.StringIO()):
+                exec(cells[0], namespace)
+                report = namespace["run_evaluation_v2"]()
+            self.assertEqual((artifacts / "evaluation.json").read_text(), original)
+            self.assertEqual(report["base"]["summary"]["cases"], 28)
+            self.assertEqual(report["tuned"]["summary"]["cases"], 28)
+            self.assertEqual(len(calls), 56)
+            self.assertTrue(all(disabled for disabled, _ in calls[:28]))
+            self.assertTrue(all(not disabled for disabled, _ in calls[28:]))
+            self.assertEqual(report["tuned"]["rows"][0]["answer"], "完整微调回答")
+            self.assertTrue((artifacts / "evaluation_v2_base.json").exists())
+            self.assertTrue((artifacts / "evaluation_v2.json").exists())
+            saved_zip = namespace["archive"]
+            self.assertNotEqual(saved_zip, archive)
+            with zipfile.ZipFile(saved_zip) as bundle:
+                saved = json.loads(bundle.read("evaluation_v2.json"))
+            self.assertEqual(saved["tuned"]["rows"][0]["answer"], "完整微调回答")
+            verify_bundle(artifacts.parent / saved_zip.name)
+
     def interview_function(self):
         cells = [src for src in sources() if "def interview_compare(" in src]
         self.assertEqual(len(cells), 1, "Notebook needs a separately runnable live interview cell")
@@ -157,6 +255,8 @@ class WorkflowTests(unittest.TestCase):
             (target / "notebooks").mkdir()
             shutil.copytree(ROOT / "data", target / "data")
             shutil.copy(ROOT / "scripts/gen_notebook.py", target / "scripts/gen_notebook.py")
+            shutil.copy(ROOT / "artifact_backup.py", target / "artifact_backup.py")
+            shutil.copy(ROOT / "evaluation_v2.py", target / "evaluation_v2.py")
             completed = subprocess.run([sys.executable, str(target / "scripts/gen_notebook.py")], capture_output=True, text=True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             actual = json.loads((target / "notebooks/qwen_lora_finetune_colab.ipynb").read_text())
@@ -174,13 +274,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("apply_chat_template", src)
         self.assertIn("num_train_epochs=3", src)
         self.assertNotIn("/no_think", src)
-        self.assertLess(src.index("shutil.make_archive("), src.index("model.save_pretrained_gguf("))
+        self.assertLess(src.index("archive = build_verified_bundle("), src.index("model.save_pretrained_gguf("))
         self.assertIn("RUN_GGUF_EXPORT = False", src)
         self.assertIn("max_memory_allocated", src)
         self.assertIn("sha256", src)
 
     def test_notebook_exports_fingerprint_of_actual_saved_adapter_in_json_and_zip(self):
-        source = next(src for src in sources() if "archive = shutil.make_archive" in src)
+        from artifact_backup import build_verified_bundle, prepare_run, verify_bundle
+        source = next(src for src in sources() if "archive = build_verified_bundle" in src)
         nodes = ast.parse(source).body
         start = next(i for i, node in enumerate(nodes) if isinstance(node, ast.Assign)
                      and any(isinstance(target, ast.Name) and target.id == "result" for target in node.targets))
@@ -192,12 +293,16 @@ class WorkflowTests(unittest.TestCase):
         for weights in [b"saved-adapter-weights-A", b"saved-adapter-weights-B"]:
             with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
                 root = Path(tmp)
-                artifacts = root / "artifacts"
+                artifacts = prepare_run(root)
                 adapter = artifacts / "lora_adapter"
                 adapter.mkdir(parents=True)
                 (adapter / "adapter_model.safetensors").write_bytes(weights)
+                (adapter / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": MODEL_ID}))
+                (adapter / "tokenizer_config.json").write_text("{}")
+                (adapter / "tokenizer.json").write_text("{}")
                 ns = {"artifacts": artifacts, "adapter_dir": adapter, "json": json, "hashlib": hashlib,
-                    "shutil": shutil, "MODEL_ID": MODEL_ID,
+                    "shutil": shutil, "MODEL_ID": MODEL_ID, "backup_cache": root / "cache",
+                    "build_verified_bundle": build_verified_bundle, "verify_bundle": verify_bundle,
                     "model": SimpleNamespace(config=SimpleNamespace(_commit_hash="base-revision")),
                     "datetime": datetime, "timezone": timezone, "dataset_manifest": {},
                     "base_metrics": {"rate": 0.72}, "tuned_metrics": {"rate": 0.68},
